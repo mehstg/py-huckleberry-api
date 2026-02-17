@@ -12,9 +12,6 @@ dependencies = [
     "google-cloud-firestore>=2.11.0",
     "requests>=2.31.0",
     "tzdata>=2024.1",
-    "urllib3>=2.6.3",
-    "protobuf>=6.33.5",
-    "pyasn1>=0.6.2",
 ]
 keywords = ["huckleberry", "baby", "tracking", "firebase", "api"]
 classifiers = [

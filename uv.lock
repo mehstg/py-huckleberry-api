@@ -330,11 +330,8 @@ version = "0.1.19"
 source = { editable = "." }
 dependencies = [
     { name = "google-cloud-firestore" },
-    { name = "protobuf" },
-    { name = "pyasn1" },
     { name = "requests" },
     { name = "tzdata" },
-    { name = "urllib3" },
 ]
 
 [package.dev-dependencies]
@@ -348,11 +345,8 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "google-cloud-firestore", specifier = ">=2.11.0" },
-    { name = "protobuf", specifier = ">=6.33.5" },
-    { name = "pyasn1", specifier = ">=0.6.2" },
     { name = "requests", specifier = ">=2.31.0" },
     { name = "tzdata", specifier = ">=2024.1" },
-    { name = "urllib3", specifier = ">=2.6.3" },
 ]
 
 [package.metadata.requires-dev]
