@@ -25,6 +25,7 @@ from .types import (
     FirebaseSleepDocument,
     FirebaseSolidsInterval,
     GrowthData,
+    SolidsReaction,
     HealthDocumentData,
     LastBottleData,
     LastDiaperData,
@@ -954,7 +955,7 @@ class HuckleberryAPI:
         child_uid: str,
         foods: list[str],
         notes: str = "",
-        reaction: str = "",
+        reaction: SolidsReaction | None = None,
     ) -> None:
         """Log solid food feeding.
 

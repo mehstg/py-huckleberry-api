@@ -16,6 +16,7 @@ UnitsSystem = Literal["metric", "imperial"]
 WeightUnits = Literal["kg", "lbs"]
 HeightUnits = Literal["cm", "in"]
 HeadUnits = Literal["hcm", "hin"]  # head cm, head inches
+SolidsReaction = Literal["LOVED", "MEH", "HATED", "ALLERGIC"]
 
 
 class ChildData(TypedDict):

@@ -11,6 +11,7 @@ from .types import (
     FeedTimerData,
     FirebaseSolidsInterval,
     GrowthData,
+    SolidsReaction,
     HealthDocumentData,
     SleepDocumentData,
     SleepIntervalData,
@@ -32,5 +33,6 @@ __all__ = [
     "SleepDocumentData",
     "SleepIntervalData",
     "SleepTimerData",
+    "SolidsReaction",
     "SolidsFeedIntervalData",
 ]
