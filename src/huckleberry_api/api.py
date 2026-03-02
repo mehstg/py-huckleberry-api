@@ -23,7 +23,9 @@ from .types import (
     FirebaseFeedDocument,
     FirebaseGrowthData,
     FirebaseSleepDocument,
+    FirebaseSolidsInterval,
     GrowthData,
+    SolidsReaction,
     HealthDocumentData,
     LastBottleData,
     LastDiaperData,
@@ -948,6 +950,56 @@ class HuckleberryAPI:
             amount, units, bottle_type
         )
 
+    def log_solids(
+        self,
+        child_uid: str,
+        foods: list[str],
+        notes: str = "",
+        reaction: SolidsReaction | None = None,
+    ) -> None:
+        """Log solid food feeding.
+
+        Args:
+            child_uid: Child unique identifier
+            foods: List of food names (e.g., ["broccoli", "rice"])
+            notes: Optional notes about the meal
+            reaction: Optional reaction - "LOVED", "MEH", "HATED", or "ALLERGIC"
+        """
+        _LOGGER.info("Logging solids for child %s: %s", child_uid, foods)
+
+        client = self._get_firestore_client()
+        feed_ref = client.collection("feed").document(child_uid)
+
+        now_time = time.time()
+        interval_id = str(uuid.uuid4())
+
+        # Build foods dict: {uuid: {"id": uuid, "source": "custom", "created_name": name}}
+        foods_dict: dict[str, dict] = {}
+        for food_name in foods:
+            food_id = str(uuid.uuid4())
+            foods_dict[food_id] = {
+                "id": food_id,
+                "source": "custom",
+                "created_name": food_name,
+            }
+
+        entry: FirebaseSolidsInterval = {
+            "mode": "solids",
+            "start": now_time,
+            "lastUpdated": now_time,
+            "offset": self._get_timezone_offset_minutes(),
+            "foods": foods_dict,
+        }
+
+        if notes:
+            entry["notes"] = notes
+        if reaction:
+            entry["reactions"] = {reaction: True}
+
+        feed_ref.collection("intervals").document(interval_id).set(cast(dict, entry))
+
+        _LOGGER.info("Solids logged: %s", ", ".join(foods))
+
     def _setup_listener(
         self, collection_name: CollectionName, child_uid: str, callback: Callable[[TDocumentData], None]
     ) -> None:
@@ -1268,6 +1320,7 @@ class HuckleberryAPI:
         return {
             "sleep": self.get_sleep_intervals(child_uid, start_timestamp, end_timestamp),
             "feed": self.get_feed_intervals(child_uid, start_timestamp, end_timestamp),
+            "solids": self.get_solids_intervals(child_uid, start_timestamp, end_timestamp),
             "diaper": self.get_diaper_intervals(child_uid, start_timestamp, end_timestamp),
             "health": self.get_health_entries(child_uid, start_timestamp, end_timestamp),
         }
@@ -1449,6 +1502,73 @@ class HuckleberryAPI:
 
         except Exception as err:
             _LOGGER.error("Error fetching feed intervals: %s", err)
+
+        return events
+
+    def get_solids_intervals(
+        self,
+        child_uid: str,
+        start_timestamp: int,
+        end_timestamp: int,
+    ) -> list[dict]:
+        """Fetch solids feeding intervals from Firestore for a date range.
+
+        Args:
+            child_uid: Child unique identifier
+            start_timestamp: Start of range (Unix timestamp in seconds)
+            end_timestamp: End of range (Unix timestamp in seconds)
+
+        Returns:
+            List of solids interval dicts with 'start', 'foods', and optional fields
+        """
+        events: list[dict] = []
+        client = self._get_firestore_client()
+        feed_ref = client.collection("feed").document(child_uid)
+        intervals_ref = feed_ref.collection("intervals")
+
+        try:
+            # Query 1: Regular docs with date filtering
+            regular_docs = intervals_ref.where(
+                filter=firestore.FieldFilter("start", ">=", start_timestamp)
+            ).where(
+                filter=firestore.FieldFilter("start", "<", end_timestamp)
+            ).order_by("start").stream()
+
+            for doc in regular_docs:
+                data = doc.to_dict()
+                if not data or data.get("multi"):
+                    continue
+                if data.get("mode") != "solids":
+                    continue
+                data["_id"] = doc.id
+                events.append(data)
+
+            # Query 2: Multi-entry documents
+            multi_docs = intervals_ref.where(
+                filter=firestore.FieldFilter("multi", "==", True)
+            ).stream()
+
+            for doc in multi_docs:
+                data = doc.to_dict()
+                if not data or not isinstance(data.get("data"), dict):
+                    continue
+                for entry_id, entry in data["data"].items():
+                    if not isinstance(entry, dict):
+                        continue
+                    if entry.get("mode") != "solids":
+                        continue
+                    start = entry.get("start")
+                    if not isinstance(start, (int, float)):
+                        continue
+                    if not (start_timestamp <= start < end_timestamp):
+                        continue
+                    row = dict(entry)
+                    row["_id"] = entry_id
+                    row["multi"] = True
+                    events.append(row)
+
+        except Exception as err:
+            _LOGGER.error("Error fetching solids intervals: %s", err)
 
         return events
 

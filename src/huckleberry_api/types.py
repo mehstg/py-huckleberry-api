@@ -16,6 +16,7 @@ UnitsSystem = Literal["metric", "imperial"]
 WeightUnits = Literal["kg", "lbs"]
 HeightUnits = Literal["cm", "in"]
 HeadUnits = Literal["hcm", "hin"]  # head cm, head inches
+SolidsReaction = Literal["LOVED", "MEH", "HATED", "ALLERGIC"]
 
 
 class ChildData(TypedDict):
@@ -374,13 +375,24 @@ class SolidsFeedIntervalData(TypedDict):
     Collection: feed/{child_uid}/intervals/{interval_id}
     Mode: "solids"
 
-    Note: Solids structure not yet fully implemented.
+    Firebase Field Mapping (camelCase → snake_case):
+    - mode → mode ("solids")
+    - start → start_sec (timestamp seconds)
+    - lastUpdated → last_updated_sec (timestamp seconds)
+    - offset → offset_min (timezone minutes)
+    - end_offset → end_offset_min (timezone minutes)
+    - foods → foods (dict of {food_id: food_details})
+    - reactions → reactions (dict of {reaction_name: bool})
+    - notes → notes (free text)
     """
     mode: Literal["solids"]
     start_sec: float
     last_updated_sec: float
     offset_min: float
     end_offset_min: NotRequired[float]
+    foods: NotRequired[dict[str, dict]]
+    reactions: NotRequired[dict[str, bool]]
+    notes: NotRequired[str]
 
 
 # Union type for all feed interval types
@@ -487,6 +499,17 @@ class FirebaseBottleInterval(TypedDict):
     units: VolumeUnits
     offset: float
     end_offset: NotRequired[float]
+
+
+class FirebaseSolidsInterval(TypedDict):
+    """Raw solids feeding interval structure (camelCase)."""
+    mode: Literal["solids"]
+    start: float
+    lastUpdated: float
+    foods: NotRequired[dict[str, dict]]
+    reactions: NotRequired[dict[str, bool]]
+    notes: NotRequired[str]
+    offset: float
 
 
 class FirebaseGrowthData(TypedDict):
