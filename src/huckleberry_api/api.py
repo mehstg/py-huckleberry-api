@@ -140,7 +140,7 @@ class HuckleberryAPI:
                     "password": self.password,
                     "returnSecureToken": True,
                 },
-                timeout=10,
+                timeout=aiohttp.ClientTimeout(total=10),
             ) as response:
                 response.raise_for_status()
                 data = await response.json()
@@ -180,7 +180,7 @@ class HuckleberryAPI:
                     "grant_type": "refresh_token",
                     "refresh_token": self.refresh_token,
                 },
-                timeout=10,
+                timeout=aiohttp.ClientTimeout(total=10),
             ) as response:
                 response.raise_for_status()
                 data = await response.json()
@@ -1028,7 +1028,7 @@ class HuckleberryAPI:
         async with self.websession.get(
             url,
             headers={"Authorization": f"Bearer {self.id_token}"},
-            timeout=30,
+            timeout=aiohttp.ClientTimeout(total=30),
         ) as response:
             response.raise_for_status()
             payload = await response.json()
@@ -1724,7 +1724,7 @@ class HuckleberryAPI:
         end_timestamp: int,
     ) -> list[HealthDataEntry]:
         """
-        Fetch health/growth entries from Firestore for a date range.
+        Fetch health entries from Firestore for a date range.
 
         Args:
             child_uid: Child unique identifier
@@ -1755,10 +1755,6 @@ class HuckleberryAPI:
                     continue  # Skip multi-entry docs from this query
 
                 entry = _HEALTH_ENTRY_ADAPTER.validate_python(data)
-                mode = getattr(entry, "mode", None)
-                if mode == "temperature":
-                    continue
-
                 events.append(entry)
 
             # Query 2: Get multi-entry documents (can't filter by nested start field)
@@ -1775,10 +1771,6 @@ class HuckleberryAPI:
                 for entry in container.data.values():
                     entry_start = entry.start
                     if not (start_timestamp <= entry_start < end_timestamp):
-                        continue
-
-                    mode = getattr(entry, "mode", None)
-                    if mode == "temperature":
                         continue
 
                     events.append(entry)

@@ -35,36 +35,36 @@ import aiohttp
 from huckleberry_api import HuckleberryAPI
 
 async def main() -> None:
-  async with aiohttp.ClientSession() as websession:
-    api = HuckleberryAPI(
-      email="your-email@example.com",
-      password="your-password",
-      timezone="Europe/London",
-      websession=websession,
-    )
+    async with aiohttp.ClientSession() as websession:
+        api = HuckleberryAPI(
+            email="your-email@example.com",
+            password="your-password",
+            timezone="Europe/London",
+            websession=websession,
+        )
 
-    await api.authenticate()
+        await api.authenticate()
 
-    children = await api.get_children()
-    child_uid = children[0].id_
+        children = await api.get_children()
+        child_uid = children[0].id_
 
-    await api.start_sleep(child_uid)
-    await api.complete_sleep(child_uid)
+        await api.start_sleep(child_uid)
+        await api.complete_sleep(child_uid)
 
-    await api.start_nursing(child_uid, side="left")
-    await api.switch_nursing_side(child_uid)
-    await api.complete_nursing(child_uid)
+        await api.start_nursing(child_uid, side="left")
+        await api.switch_nursing_side(child_uid)
+        await api.complete_nursing(child_uid)
 
-    await api.log_bottle_feeding(child_uid, amount=120.0, bottle_type="Formula", units="ml")
-    await api.log_diaper(
-      child_uid,
-      mode="both",
-      pee_amount="medium",
-      poo_amount="medium",
-      color="yellow",
-      consistency="solid",
-    )
-    await api.log_growth(child_uid, weight=5.2, height=52.0, head=35.0, units="metric")
+        await api.log_bottle_feeding(child_uid, amount=120.0, bottle_type="Formula", units="ml")
+        await api.log_diaper(
+            child_uid,
+            mode="both",
+            pee_amount="medium",
+            poo_amount="medium",
+            color="yellow",
+            consistency="solid",
+        )
+        await api.log_growth(child_uid, weight=5.2, height=52.0, head=35.0, units="metric")
 
 
 asyncio.run(main())
@@ -173,6 +173,7 @@ Huckleberry's Firebase Security Rules block non-SDK requests. Direct REST API ca
 - Python 3.9+
 - `google-cloud-firestore>=2.11.0`
 - `aiohttp>=3.10.0`
+- `pydantic>=2.10.0`
 
 ## Development
 
