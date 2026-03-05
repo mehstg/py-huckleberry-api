@@ -29,46 +29,42 @@ pip install huckleberry-api
 ## Quick Start
 
 ```python
+import asyncio
+
 from huckleberry_api import HuckleberryAPI
 
-# Initialize API client
-api = HuckleberryAPI(
+async def main() -> None:
+    api = HuckleberryAPI(
     email="your-email@example.com",
     password="your-password",
-    timezone="Europe/London"
-)
+    timezone="Europe/London",
+    )
 
-# Authenticate
-api.authenticate()
+    await api.authenticate()
 
-# Get children
-children = api.get_children()
-child_uid = children[0]["uid"]
+    children = await api.get_children()
+    child_uid = children[0].id_
 
-# Start sleep tracking
-api.start_sleep(child_uid)
+    await api.start_sleep(child_uid)
+    await api.complete_sleep(child_uid)
 
-# Complete sleep session
-api.complete_sleep(child_uid)
+    await api.start_nursing(child_uid, side="left")
+    await api.switch_nursing_side(child_uid)
+    await api.complete_nursing(child_uid)
 
-# Start breastfeeding
-api.start_feeding(child_uid, side="left")
+    await api.log_bottle_feeding(child_uid, amount=120.0, bottle_type="Formula", units="ml")
+    await api.log_diaper(
+        child_uid,
+        mode="both",
+        pee_amount="medium",
+        poo_amount="medium",
+        color="yellow",
+        consistency="solid",
+    )
+    await api.log_growth(child_uid, weight=5.2, height=52.0, head=35.0, units="metric")
 
-# Switch sides
-api.switch_feeding_side(child_uid)
 
-# Complete breastfeeding
-api.complete_feeding(child_uid)
-
-# Log bottle feeding
-api.log_bottle_feeding(child_uid, amount=120.0, bottle_type="Formula", units="ml")
-
-# Log diaper change
-api.log_diaper(child_uid, mode="both", pee=True, poo=True,
-               color="yellow", consistency="soft")
-
-# Log growth measurements
-api.log_growth(child_uid, weight=5.2, height=52.0, head=35.0, units="metric")
+asyncio.run(main())
 ```
 
 ## Real-time Listeners
@@ -81,68 +77,77 @@ def on_sleep_update(data):
     print(f"Sleep active: {timer.get('active')}")
     print(f"Sleep paused: {timer.get('paused')}")
 
-# Setup listener
-api.setup_realtime_listener(child_uid, on_sleep_update)
+async def main() -> None:
+  api = HuckleberryAPI(
+    email="your-email@example.com",
+    password="your-password",
+    timezone="Europe/London",
+  )
+  await api.authenticate()
+  children = await api.get_children()
+  child_uid = children[0].id_
 
-# Stop all listeners when done
-api.stop_all_listeners()
+  await api.setup_realtime_listener(child_uid, on_sleep_update)
+  await api.stop_all_listeners()
 ```
 
 ## API Methods
 
 ### Authentication
-- `authenticate()` - Authenticate with Firebase
-- `refresh_auth_token()` - Refresh expired token
+- `await authenticate()` - Authenticate with Firebase
+- `await refresh_auth_token()` - Refresh expired token
 
 ### Children
-- `get_children()` - Get list of children with profiles
+- `await get_children()` - Get list of children with profiles
 
 ### Sleep Tracking
-- `start_sleep(child_uid)` - Start sleep session
-- `pause_sleep(child_uid)` - Pause active session
-- `resume_sleep(child_uid)` - Resume paused session
-- `cancel_sleep(child_uid)` - Cancel without saving
-- `complete_sleep(child_uid)` - Complete and save to history
-- `complete_sleep(child_uid)` - Complete and save to history
+- `await start_sleep(child_uid)` - Start sleep session
+- `await pause_sleep(child_uid)` - Pause active session
+- `await resume_sleep(child_uid)` - Resume paused session
+- `await cancel_sleep(child_uid)` - Cancel without saving
+- `await complete_sleep(child_uid)` - Complete and save to history
 
 ### Feeding Tracking
-- `start_feeding(child_uid, side)` - Start breastfeeding session
-- `pause_feeding(child_uid)` - Pause active session
-- `resume_feeding(child_uid, side)` - Resume paused session
-- `switch_feeding_side(child_uid)` - Switch left/right
-- `cancel_feeding(child_uid)` - Cancel without saving
-- `complete_feeding(child_uid)` - Complete and save to history
-- `log_bottle_feeding(child_uid, amount, bottle_type, units)` - Log bottle feeding
-  - `bottle_type`: "Breast Milk", "Formula", or "Mixed"
+- `await start_nursing(child_uid, side)` - Start breastfeeding session
+- `await pause_nursing(child_uid)` - Pause active session
+- `await resume_nursing(child_uid, side)` - Resume paused session
+- `await switch_nursing_side(child_uid)` - Switch left/right
+- `await cancel_nursing(child_uid)` - Cancel without saving
+- `await complete_nursing(child_uid)` - Complete and save to history
+- `await log_bottle_feeding(child_uid, amount, bottle_type, units)` - Log bottle feeding
+  - `bottle_type`: "Breast Milk", "Formula", "Cow Milk", "Soy Milk", etc.
   - `amount`: Volume fed (e.g., 120.0)
   - `units`: "ml" or "oz"
 
 ### Diaper Tracking
-- `log_diaper(child_uid, mode, pee, poo, color, consistency)` - Log diaper change
+- `await log_diaper(child_uid, mode, pee_amount, poo_amount, color, consistency)` - Log diaper change
   - `mode`: "pee", "poo", "both", or "dry"
   - `color`: "yellow", "green", "brown", "black", "red"
   - `consistency`: "runny", "soft", "solid", "hard"
 
 ### Growth Tracking
-- `log_growth(child_uid, weight, height, head, units)` - Log measurements
+- `await log_growth(child_uid, weight, height, head, units)` - Log measurements
   - `units`: "metric" (kg/cm) or "imperial" (lbs/inches)
-- `get_growth_data(child_uid)` - Get latest measurements
+- `await get_growth_data(child_uid)` - Get latest measurements
 
 ### Real-time Listeners
-- `setup_realtime_listener(child_uid, callback)` - Listen to sleep updates
-- `setup_feed_listener(child_uid, callback)` - Listen to feeding updates
-- `setup_health_listener(child_uid, callback)` - Listen to health updates
-- `stop_all_listeners()` - Stop all active listeners
+- `await setup_realtime_listener(child_uid, callback)` - Listen to sleep updates
+- `await setup_feed_listener(child_uid, callback)` - Listen to feeding updates
+- `await setup_health_listener(child_uid, callback)` - Listen to health updates
+- `await stop_all_listeners()` - Stop all active listeners
 
 ## Type Definitions
 
-The package includes TypedDict definitions for type safety:
+The package includes Pydantic models for type safety.
+
+Canonical Firebase schema definitions are in `src/huckleberry_api/firebase_types.py`.
 
 - `ChildData` - Child profile information
-- `SleepDocumentData` / `SleepTimerData` - Sleep tracking data
-- `FeedDocumentData` / `FeedTimerData` - Feeding tracking data
-- `HealthDocumentData` - Health tracking data
-- `GrowthData` - Growth measurements
+- `FirebaseChildDocument` - Child profile information
+- `FirebaseSleepDocumentData` / `FirebaseSleepTimerData` - Sleep tracking data
+- `FirebaseFeedDocumentData` / `FirebaseFeedTimerData` - Feeding tracking data
+- `FirebaseHealthDocumentData` - Health tracking data
+- `FirebaseGrowthData` - Growth measurements
 
 ## Architecture
 
@@ -160,7 +165,7 @@ Huckleberry's Firebase Security Rules block non-SDK requests. Direct REST API ca
 
 - Python 3.9+
 - `google-cloud-firestore>=2.11.0`
-- `requests>=2.31.0`
+- `httpx>=0.27.0`
 
 ## Development
 
@@ -177,11 +182,25 @@ $env:HUCKLEBERRY_PASSWORD = "test-password"
 .\run-tests.ps1
 ```
 
+### Linting, Formatting, and Type Checking
+
+```bash
+# Lint
+uv run ruff check .
+
+# Format
+uv run ruff format .
+
+# Type check
+uv run ty check --python-version 3.11 --ignore unknown-argument
+```
+
 See [tests/README.md](tests/README.md) for detailed testing documentation.
 
 ### CI/CD
 
-Integration tests run automatically on GitHub Actions for all pushes to `main`. See [GITHUB_SECRETS_SETUP.md](GITHUB_SECRETS_SETUP.md) for instructions on configuring GitHub secrets.
+- PR Validation runs on pull requests and pushes to `main` and checks Ruff linting/formatting and Ty type checking.
+- Integration tests run on GitHub Actions and require Huckleberry credentials.
 
 ## License
 

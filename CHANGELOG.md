@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `FirebaseBottleInterval` TypedDict for raw Firebase structure
   - Refactored `FeedIntervalData` into union type (`BreastFeedIntervalData | BottleFeedIntervalData | SolidsFeedIntervalData`)
 - **TESTS**: 6 new integration tests for bottle feeding functionality
-- **DOCUMENTATION**: Updated DATA_STRUCTURE.md with bottle feeding interval examples
+- **DOCUMENTATION**: Updated `src/huckleberry_api/firebase_types.py` with bottle feeding interval schema examples
 
 ### Fixed
 - **CALENDAR COMPATIBILITY**: `get_feed_intervals()` now preserves bottle metadata fields

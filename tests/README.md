@@ -40,6 +40,9 @@ uv run pytest tests/test_authentication.py::TestAuthentication -v
 
 # Run specific test
 uv run pytest tests/test_sleep.py::TestSleepTracking::test_start_and_cancel_sleep -v
+
+# Validate latest live Firebase entries against strict schemas
+uv run pytest tests/test_live_firebase_models.py -q
 ```
 
 ## Test Coverage
@@ -67,7 +70,12 @@ The integration tests are organized into separate modules:
 - **Data Retrieval**: Getting growth history
 
 ### `test_listeners.py`
-- **Real-time Listeners**: Sleep, feeding, and health listeners with token refresh
+- **Real-time Listeners**: Sleep, feeding, diaper, and health listeners with token refresh
+
+### `test_live_firebase_models.py`
+- **Live Schema Validation**: Validates latest live Firebase payloads against strict models in `src/huckleberry_api/firebase_types.py`
+- Run app actions first, then run this test to validate newest entries
+- Optional env var: `HUCKLEBERRY_MODEL_VALIDATION_MAX_DOCS` (default `20`)
 
 ## CI/CD
 
@@ -100,5 +108,5 @@ Tests will automatically skip if:
 
 Full test suite takes approximately 2-3 minutes to run due to:
 - Real Firebase operations with network latency
-- Intentional delays (`time.sleep()`) to allow Firebase propagation
+- Intentional delays (`await asyncio.sleep()`) to allow Firebase propagation
 - Multiple test scenarios with setup/teardown
