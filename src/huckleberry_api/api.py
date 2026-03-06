@@ -268,14 +268,6 @@ class HuckleberryAPI:
 
         return self._firestore_client
 
-    async def get_firestore_client(self) -> AsyncClient:
-        """Get or create Firestore client.
-
-        Public accessor used by diagnostics and tooling that need raw Firestore reads.
-        """
-
-        return await self._get_firestore_client()
-
     async def _get_timezone_offset_minutes(self) -> float:
         """Get current timezone offset in minutes.
 
@@ -288,15 +280,7 @@ class HuckleberryAPI:
             return 0.0
         return -offset.total_seconds() / 60
 
-    async def get_timezone_offset_minutes(self) -> float:
-        """Get current timezone offset in minutes.
-
-        Public async accessor used by tests and consumers that need offset calculations.
-        """
-
-        return await self._get_timezone_offset_minutes()
-
-    async def get_child_document(self, child_uid: str) -> FirebaseChildDocument | None:
+    async def get_child(self, child_uid: str) -> FirebaseChildDocument | None:
         """Get a single child document by child UID."""
         _LOGGER.debug("Fetching child document for %s", child_uid)
 
@@ -320,7 +304,7 @@ class HuckleberryAPI:
             _LOGGER.error("Failed to get child %s: %s", child_uid, err)
             raise
 
-    async def get_user_document(self) -> FirebaseUserDocument | None:
+    async def get_user(self) -> FirebaseUserDocument | None:
         """Get full users/{uid} document as strict Firebase model."""
         _LOGGER.debug("Fetching user document")
 
@@ -923,7 +907,7 @@ class HuckleberryAPI:
             "Nursing completed (total duration %ss, L:%ss R:%ss)", total_duration, left_duration, right_duration
         )
 
-    async def log_bottle_feeding(
+    async def log_bottle(
         self,
         child_uid: str,
         amount: float,
@@ -1435,7 +1419,7 @@ class HuckleberryAPI:
             _LOGGER.error("Failed to log growth data: %s", err)
             raise
 
-    async def get_latest_growth_data(self, child_uid: str) -> FirebaseGrowthData | None:
+    async def get_latest_growth(self, child_uid: str) -> FirebaseGrowthData | None:
         """
         Get the latest growth measurements for a child.
 

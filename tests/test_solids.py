@@ -46,7 +46,7 @@ class TestSolidsFeeding:
         )
         await asyncio.sleep(2)
 
-        db = await api.get_firestore_client()
+        db = await api._get_firestore_client()
 
         intervals_ref = db.collection("feed").document(child_uid).collection("intervals")
 
@@ -95,7 +95,7 @@ class TestSolidsFeeding:
         )
         await asyncio.sleep(2)
 
-        db = await api.get_firestore_client()
+        db = await api._get_firestore_client()
 
         intervals_ref = db.collection("feed").document(child_uid).collection("intervals")
 

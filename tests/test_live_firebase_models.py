@@ -101,7 +101,7 @@ async def _child_uids(api: HuckleberryAPI, db: Any) -> list[str]:
     user_doc = await db.collection("users").document(api.user_uid).get()
     user_payload = _doc_to_dict(user_doc)
     if not user_payload:
-        user_model = await api.get_user_document()
+        user_model = await api.get_user()
         return [item.cid for item in user_model.childList] if user_model else []
 
     FirebaseUserDocument.model_validate(user_payload)
@@ -117,7 +117,7 @@ async def _child_uids(api: HuckleberryAPI, db: Any) -> list[str]:
                     child_uids.append(child_id)
 
     if not child_uids:
-        user_model = await api.get_user_document()
+        user_model = await api.get_user()
         child_uids = [item.cid for item in user_model.childList] if user_model else []
 
     unique_ids: list[str] = []
@@ -134,7 +134,7 @@ async def _child_uids(api: HuckleberryAPI, db: Any) -> list[str]:
 @pytest.mark.integration
 async def test_live_user_child_and_root_documents(api: HuckleberryAPI) -> None:
     """Validate core user/child root docs against strict schemas."""
-    db = await api.get_firestore_client()
+    db = await api._get_firestore_client()
     child_uids = await _child_uids(api, db)
     assert child_uids
 
@@ -173,7 +173,7 @@ async def test_live_user_child_and_root_documents(api: HuckleberryAPI) -> None:
 @pytest.mark.integration
 async def test_live_latest_sleep_and_diaper_intervals(api: HuckleberryAPI) -> None:
     """Validate latest sleep/diaper intervals (regular and multi wrapper docs)."""
-    db = await api.get_firestore_client()
+    db = await api._get_firestore_client()
     child_uids = await _child_uids(api, db)
 
     for child_uid in child_uids:
@@ -201,7 +201,7 @@ async def test_live_latest_sleep_and_diaper_intervals(api: HuckleberryAPI) -> No
 @pytest.mark.integration
 async def test_live_latest_feed_intervals(api: HuckleberryAPI) -> None:
     """Validate latest feed intervals by mode (breast/bottle/solids)."""
-    db = await api.get_firestore_client()
+    db = await api._get_firestore_client()
     child_uids = await _child_uids(api, db)
 
     for child_uid in child_uids:
@@ -243,7 +243,7 @@ async def test_live_latest_feed_intervals(api: HuckleberryAPI) -> None:
 @pytest.mark.integration
 async def test_live_latest_health_pump_activities_and_foods(api: HuckleberryAPI) -> None:
     """Validate latest health/pump/activities/custom+curated food payloads."""
-    db = await api.get_firestore_client()
+    db = await api._get_firestore_client()
     child_uids = await _child_uids(api, db)
 
     for child_uid in child_uids:

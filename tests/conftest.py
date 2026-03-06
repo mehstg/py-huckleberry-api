@@ -42,7 +42,7 @@ async def api(websession: aiohttp.ClientSession) -> AsyncIterator[HuckleberryAPI
 @pytest_asyncio.fixture
 async def child_uid(api: HuckleberryAPI) -> str:
     """Get child UID for testing."""
-    user_doc = await api.get_user_document()
+    user_doc = await api.get_user()
     if not user_doc or not user_doc.childList:
         pytest.skip("No children found in test account")
     return user_doc.childList[0].cid

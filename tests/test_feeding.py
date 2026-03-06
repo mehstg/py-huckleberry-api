@@ -16,7 +16,7 @@ class TestFeedingTracking:
         await api.start_nursing(child_uid, side="left")
         await asyncio.sleep(1)
 
-        db = await api.get_firestore_client()
+        db = await api._get_firestore_client()
 
         feed_doc = await db.collection("feed").document(child_uid).get()
         assert feed_doc.exists
@@ -44,7 +44,7 @@ class TestFeedingTracking:
         await api.switch_nursing_side(child_uid)
         await asyncio.sleep(2)
 
-        db = await api.get_firestore_client()
+        db = await api._get_firestore_client()
 
         feed_doc = await db.collection("feed").document(child_uid).get()
         data = feed_doc.to_dict()
@@ -73,7 +73,7 @@ class TestFeedingTracking:
         await api.pause_nursing(child_uid)
         await asyncio.sleep(1)
 
-        db = await api.get_firestore_client()
+        db = await api._get_firestore_client()
 
         feed_doc = await db.collection("feed").document(child_uid).get()
         data = feed_doc.to_dict()
@@ -108,7 +108,7 @@ class TestFeedingTracking:
         await api.resume_nursing(child_uid, side="right")
         await asyncio.sleep(1)
 
-        db = await api.get_firestore_client()
+        db = await api._get_firestore_client()
 
         feed_doc = await db.collection("feed").document(child_uid).get()
         data = feed_doc.to_dict()
@@ -128,7 +128,7 @@ class TestFeedingTracking:
         await api.complete_nursing(child_uid)
         await asyncio.sleep(2)
 
-        db = await api.get_firestore_client()
+        db = await api._get_firestore_client()
 
         # Check intervals subcollection
         intervals_ref = db.collection("feed").document(child_uid).collection("intervals")

@@ -45,9 +45,7 @@ async def main() -> None:
 
         await api.authenticate()
 
-        user_doc = await api.get_user_document()
-        if not user_doc or not user_doc.childList:
-          return
+        user_doc = await api.get_user()
         child_uid = user_doc.childList[0].cid
 
         await api.start_sleep(child_uid)
@@ -57,7 +55,7 @@ async def main() -> None:
         await api.switch_nursing_side(child_uid)
         await api.complete_nursing(child_uid)
 
-        await api.log_bottle_feeding(child_uid, amount=120.0, bottle_type="Formula", units="ml")
+        await api.log_bottle(child_uid, amount=120.0, bottle_type="Formula", units="ml")
         await api.log_diaper(
             child_uid,
             mode="both",
@@ -93,9 +91,7 @@ async def main() -> None:
             websession=websession,
         )
         await api.authenticate()
-        user_doc = await api.get_user_document()
-        if not user_doc or not user_doc.childList:
-          return
+        user_doc = await api.get_user()
         child_uid = user_doc.childList[0].cid
 
         await api.setup_sleep_listener(child_uid, on_sleep_update)
@@ -110,8 +106,8 @@ async def main() -> None:
 - `await refresh_session_token()` - Refresh expired token
 
 ### Children
-- `await get_user_document()` - Get full `users/{uid}` document
-- `await get_child_document(child_uid)` - Get a single child profile by id
+- `await get_user()` - Get full `users/{uid}` document
+- `await get_child(child_uid)` - Get a single child profile by id
 
 ### Sleep Tracking
 - `await start_sleep(child_uid)` - Start sleep session
@@ -127,7 +123,7 @@ async def main() -> None:
 - `await switch_nursing_side(child_uid)` - Switch left/right
 - `await cancel_nursing(child_uid)` - Cancel without saving
 - `await complete_nursing(child_uid)` - Complete and save to history
-- `await log_bottle_feeding(child_uid, amount, bottle_type, units)` - Log bottle feeding
+- `await log_bottle(child_uid, amount, bottle_type, units)` - Log bottle feeding
   - `bottle_type`: "Breast Milk", "Formula", "Cow Milk", "Soy Milk", etc.
   - `amount`: Volume fed (e.g., 120.0)
   - `units`: "ml" or "oz"
@@ -147,7 +143,7 @@ async def main() -> None:
 ### Growth Tracking
 - `await log_growth(child_uid, weight, height, head, units)` - Log measurements
   - `units`: "metric" (kg/cm) or "imperial" (lbs/inches)
-- `await get_latest_growth_data(child_uid)` - Get latest measurements
+- `await get_latest_growth(child_uid)` - Get latest measurements
 
 ### Real-time Listeners
 - `await setup_sleep_listener(child_uid, callback)` - Listen to sleep updates

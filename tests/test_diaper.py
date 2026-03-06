@@ -14,7 +14,7 @@ class TestDiaperTracking:
         await asyncio.sleep(1)
 
         # Verify it was logged
-        db = await api.get_firestore_client()
+        db = await api._get_firestore_client()
         diaper_doc = await db.collection("diaper").document(child_uid).get()
         data = diaper_doc.to_dict()
         assert data is not None
@@ -26,7 +26,7 @@ class TestDiaperTracking:
         await api.log_diaper(child_uid, mode="poo", poo_amount="big", color="yellow", consistency="solid")
         await asyncio.sleep(1)
 
-        db = await api.get_firestore_client()
+        db = await api._get_firestore_client()
         diaper_doc = await db.collection("diaper").document(child_uid).get()
         data = diaper_doc.to_dict()
         assert data is not None
@@ -39,7 +39,7 @@ class TestDiaperTracking:
         )
         await asyncio.sleep(1)
 
-        db = await api.get_firestore_client()
+        db = await api._get_firestore_client()
         diaper_doc = await db.collection("diaper").document(child_uid).get()
         data = diaper_doc.to_dict()
         assert data is not None
@@ -50,7 +50,7 @@ class TestDiaperTracking:
         await api.log_diaper(child_uid, mode="dry")
         await asyncio.sleep(1)
 
-        db = await api.get_firestore_client()
+        db = await api._get_firestore_client()
         diaper_doc = await db.collection("diaper").document(child_uid).get()
         data = diaper_doc.to_dict()
         assert data is not None

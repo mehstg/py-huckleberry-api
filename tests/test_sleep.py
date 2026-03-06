@@ -16,7 +16,7 @@ class TestSleepTracking:
         await api.start_sleep(child_uid)
         await asyncio.sleep(1)  # Wait for Firebase to propagate
 
-        db = await api.get_firestore_client()
+        db = await api._get_firestore_client()
 
         # Get current state
         sleep_doc = await db.collection("sleep").document(child_uid).get()
@@ -45,7 +45,7 @@ class TestSleepTracking:
         await api.pause_sleep(child_uid)
         await asyncio.sleep(1)
 
-        db = await api.get_firestore_client()
+        db = await api._get_firestore_client()
 
         sleep_doc = await db.collection("sleep").document(child_uid).get()
         data = sleep_doc.to_dict()
@@ -81,7 +81,7 @@ class TestSleepTracking:
         await api.complete_sleep(child_uid)
         await asyncio.sleep(2)
 
-        db = await api.get_firestore_client()
+        db = await api._get_firestore_client()
 
         # Check intervals subcollection
         intervals_ref = db.collection("sleep").document(child_uid).collection("intervals")
