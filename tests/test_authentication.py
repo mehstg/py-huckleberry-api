@@ -63,26 +63,25 @@ class TestAuthentication:
         )
 
         # Verify the refreshed token works by making a Firestore call
-        children = await api.get_children()
-        assert len(children) > 0
+        user_doc = await api.get_user_document()
+        assert user_doc is not None
 
 
 class TestChildrenRetrieval:
     """Test children data retrieval."""
 
     async def test_get_children(self, api: HuckleberryAPI) -> None:
-        """Test retrieving children list."""
-        children = await api.get_children()
-        assert isinstance(children, list)
-        assert len(children) > 0
+        """Test retrieving user childList and child document by id."""
+        user_doc = await api.get_user_document()
+        assert user_doc is not None
 
-        child_ids = [child.id_ for child in children if child.id_]
-        assert len(child_ids) == len(set(child_ids))
+        child_uids = [child_ref.cid for child_ref in user_doc.childList]
+        assert len(child_uids) > 0
+        assert len(child_uids) == len(set(child_uids))
 
-        # Verify child data structure
-        for child in children:
-            assert child.id_
-            assert child.childsName
+        child = await api.get_children(child_uids[0])
+        assert child is not None
+        assert child.model_dump(exclude_none=True)
 
 
 class TestErrorHandling:

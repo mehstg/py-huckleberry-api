@@ -296,66 +296,48 @@ class HuckleberryAPI:
 
         return await self._get_timezone_offset_minutes()
 
-    async def get_children(self) -> list[FirebaseChildDocument]:
-        """Get list of children from user profile."""
-        _LOGGER.debug("Fetching children list")
+    async def get_children(self, child_uid: str) -> FirebaseChildDocument | None:
+        """Get a single child document by child UID."""
+        _LOGGER.debug("Fetching child document for %s", child_uid)
 
         try:
-            # Get Firestore client
             db = await self._get_firestore_client()
+            child_doc_ref = db.collection("childs").document(child_uid)
+            child_doc = await child_doc_ref.get()
 
-            # Get user document which contains lastChild reference
-            user_ref = db.collection("users").document(self.user_uid)
-            user_doc = await user_ref.get()
+            if not child_doc.exists:
+                _LOGGER.warning("Child document not found: %s", child_uid)
+                return None
 
-            if not user_doc.exists:
-                _LOGGER.error("User document not found")
-                return []
+            child_data = child_doc.to_dict()
+            if not child_data:
+                _LOGGER.warning("Child document has no data: %s", child_uid)
+                return None
 
-            user_data = user_doc.to_dict()
-            if not user_data:
-                _LOGGER.error("User document has no data")
-                return []
-
-            user_model = FirebaseUserDocument.model_validate(user_data)
-
-            child_list = user_model.childList
-            if not child_list:
-                _LOGGER.error("No childList found in user document")
-                return []
-
-            children: list[FirebaseChildDocument] = []
-            for child_ref_item in child_list:
-                child_id = child_ref_item.cid
-
-                if not child_id:
-                    _LOGGER.warning("Child id not found in childList")
-                    continue
-
-                # Get child document
-                child_doc_ref = db.collection("childs").document(child_id)
-                child_doc = await child_doc_ref.get()
-
-                if not child_doc.exists:
-                    _LOGGER.warning("Child document not found: %s", child_id)
-                    continue
-
-                child_data = child_doc.to_dict()
-                if not child_data:
-                    _LOGGER.warning("Child document has no data: %s", child_id)
-                    continue
-
-                payload = dict(child_data)
-                payload["_id"] = child_id
-
-                children.append(FirebaseChildDocument.model_validate(payload))
-
-            _LOGGER.info("Found %d children", len(children))
-            return children
+            return FirebaseChildDocument.model_validate(child_data)
 
         except (GoogleAPICallError, ValidationError, RuntimeError, TypeError, ValueError) as err:
-            _LOGGER.error("Failed to get children: %s", err)
+            _LOGGER.error("Failed to get child %s: %s", child_uid, err)
             raise
+
+    async def get_user_document(self) -> FirebaseUserDocument | None:
+        """Get full users/{uid} document as strict Firebase model."""
+        _LOGGER.debug("Fetching user document")
+
+        db = await self._get_firestore_client()
+        user_ref = db.collection("users").document(self.user_uid)
+        user_doc = await user_ref.get()
+
+        if not user_doc.exists:
+            _LOGGER.error("User document not found")
+            return None
+
+        user_data = user_doc.to_dict()
+        if not user_data:
+            _LOGGER.error("User document has no data")
+            return None
+
+        return FirebaseUserDocument.model_validate(user_data)
 
     async def start_sleep(self, child_uid: str) -> None:
         """Start sleep tracking for a child."""
@@ -572,7 +554,6 @@ class HuckleberryAPI:
         intervals_ref = sleep_ref.collection("intervals")
         interval_id = uuid.uuid4().hex[:16]
         sleep_interval = FirebaseSleepIntervalData(
-            _id=interval_id,
             start=start_sec,
             duration=duration_sec,
             offset=await self._get_timezone_offset_minutes(),
@@ -689,11 +670,9 @@ class HuckleberryAPI:
                 "timer.leftDuration": left_duration,
                 "timer.rightDuration": right_duration,
                 "timer.lastSide": current_side,
+                "timer.activeSide": DELETE_FIELD,
             }
         )
-
-        # Remove activeSide when paused
-        await feed_ref.update({"timer.activeSide": DELETE_FIELD})
 
         _LOGGER.info("Nursing paused (L:%ss R:%ss)", left_duration, right_duration)
 
@@ -1036,13 +1015,11 @@ class HuckleberryAPI:
             raise RuntimeError("Unexpected curated foods payload shape")
 
         foods: list[FirebaseCuratedFoodDocument] = []
-        for food_id, food_data in payload.items():
+        for food_data in payload.values():
             if not isinstance(food_data, dict):
                 continue
 
             entry = dict(food_data)
-            entry.setdefault("id", food_id)
-            entry.setdefault("source", "curated")
             foods.append(FirebaseCuratedFoodDocument.model_validate(entry))
 
         return sorted(
@@ -1063,9 +1040,6 @@ class HuckleberryAPI:
         foods: list[FirebaseCustomFoodTypeDocument] = []
         async for doc in custom_ref.where("type", "==", "solids").stream():
             raw_data = doc.to_dict() or {}
-            if "id" not in raw_data:
-                raw_data["id"] = doc.id
-
             item = FirebaseCustomFoodTypeDocument.model_validate(raw_data)
             if not include_archived and item.archived:
                 continue
@@ -1228,7 +1202,7 @@ class HuckleberryAPI:
                         validated = FirebaseHealthDocumentData.model_validate(payload)
                     else:
                         validated = FirebaseDiaperDocumentData.model_validate(payload)
-                    callback(cast(TDocumentData, validated.model_dump(exclude_none=True)))
+                    callback(cast(TDocumentData, validated))
 
         # Start listening and store the unsubscribe function
         unsubscribe = doc_ref.on_snapshot(on_snapshot)
@@ -1405,7 +1379,6 @@ class HuckleberryAPI:
 
         # Build growth entry matching Huckleberry app structure
         growth_entry = FirebaseGrowthData(
-            _id=interval_id,
             type="health",
             mode="growth",
             start=current_time,
@@ -1555,9 +1528,7 @@ class HuckleberryAPI:
                 if not data or data.get("multi"):
                     continue  # Skip multi-entry docs from this query
 
-                payload = dict(data)
-                payload.setdefault("_id", doc.id)
-                interval = FirebaseSleepIntervalData.model_validate(payload)
+                interval = FirebaseSleepIntervalData.model_validate(data)
                 events.append(interval)
 
             # Query 2: Get multi-entry documents (can't filter by nested start field)
@@ -1571,12 +1542,12 @@ class HuckleberryAPI:
                 container = FirebaseSleepMultiContainer.model_validate(data)
 
                 # Iterate through batched entries and filter by date
-                for entry_id, entry in container.data.items():
+                for entry in container.data.values():
                     entry_start = entry.start
                     if not (start_timestamp <= entry_start < end_timestamp):
                         continue
 
-                    events.append(entry.model_copy(update={"id_": entry.id_ or entry_id}))
+                    events.append(entry)
 
         except (GoogleAPICallError, ValidationError) as err:
             _LOGGER.error("Error fetching sleep intervals: %s", err)

@@ -126,7 +126,6 @@ class FirebaseUserDocument(StrictModel):
     firstname: str | None = None
     lastname: str | None = None
     childList: list[FirebaseUserChildRef]
-    # Firestore uses `lastChild` and child documents use `birthdate` (not `birthday`).
     lastChild: str | None = None
     # analytics: dict[str, Any] | None = None
     appsFlyerId: str | list[str] | None = None
@@ -150,10 +149,18 @@ class FirebaseUserDocument(StrictModel):
 # ---------------------------------------------------------------------------
 
 
+class FirebaseChildSweetspot(StrictModel):
+    """Known payload for childs/{child_id}.sweetspot."""
+
+    selectedNapDay: Number | None = None
+    sweetSpotTimes: dict[str, Number] | None = None
+    # sweetspotStrings: FirebaseChildSweetspotStrings | None = None
+    uuid: str | None = None
+
+
 class FirebaseChildDocument(StrictModel):
     """Known fields from childs/{child_id}."""
 
-    id_: str | None = Field(default=None, alias="_id")
     # App display-name path reads childs/{cid}.childsName (fallback source is users/{uid}.childList[].nickname).
     childsName: str | None = None
     birthdate: str | Number | None = None
@@ -164,7 +171,7 @@ class FirebaseChildDocument(StrictModel):
     nightStart: str | Number | None = None
     morningCutoff: str | Number | None = None
     naps: str | None = None
-    # sweetspot: Any | None = None
+    sweetspot: FirebaseChildSweetspot | None = None
     # analytics: Any | None = None
     pre: Number | None = None
     singleIntervalCount: Number | None = None
@@ -172,12 +179,11 @@ class FirebaseChildDocument(StrictModel):
     categories: dict[str, bool] | None = None
     # celebrations: Any | None = None
     disabledInsights: dict[str, bool] | None = None
-    # sleep_scheduler: Any | None = None
+    # sleep_scheduler: FirebaseChildSleepScheduler | None = None
     # summaryAssets: Any | None = None
     questionnaireProgress: Number | None = None
     lastQuestionnaireAppVersion: str | None = None
     lastQuestionnaireCompleteTime: Number | None = None
-    # sweetspotAdjust: Any | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -370,13 +376,13 @@ class FirebaseSleepIntervalData(StrictModel):
     Sleep history rows are written to `intervals` subcollection (not root doc).
     """
 
+    id_: str | None = Field(default=None, alias="_id")
     start: Number
     duration: Number
     offset: Number
     end_offset: Number | None = None
     details: FirebaseSleepDetails | None = None
     lastUpdated: Number | None = None
-    id_: str | None = Field(default=None, alias="_id")
 
 
 class FirebaseSleepMultiContainer(StrictModel):
@@ -694,7 +700,6 @@ class FirebaseMedicationData(StrictModel):
     Health tracker writes medication rows to `health/{child_uid}/data`.
     """
 
-    id_: str | None = Field(default=None, alias="_id")
     type: Literal["health"] | None = None
     mode: Literal["medication"]
     start: Number
@@ -714,7 +719,6 @@ class FirebaseTemperatureData(StrictModel):
     Health tracker writes temperature rows to `health/{child_uid}/data`.
     """
 
-    id_: str | None = Field(default=None, alias="_id")
     type: Literal["health"] | None = None
     mode: Literal["temperature"]
     start: Number
@@ -765,7 +769,6 @@ class FirebasePumpIntervalData(StrictModel):
     Pump tracker follows the common `intervals` subcollection convention.
     """
 
-    id_: str | None = Field(default=None, alias="_id")
     start: Number
     entryMode: PumpEntryMode
     leftAmount: Number | None = None
@@ -798,7 +801,6 @@ class FirebaseActivityIntervalData(StrictModel):
     Activities tracker follows the common `intervals` subcollection convention.
     """
 
-    id_: str | None = Field(default=None, alias="_id")
     mode: ActivityMode
     start: Number
     offset: Number

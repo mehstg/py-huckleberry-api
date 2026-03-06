@@ -45,8 +45,10 @@ async def main() -> None:
 
         await api.authenticate()
 
-        children = await api.get_children()
-        child_uid = children[0].id_
+        user_doc = await api.get_user_document()
+        if not user_doc or not user_doc.childList:
+          return
+        child_uid = user_doc.childList[0].cid
 
         await api.start_sleep(child_uid)
         await api.complete_sleep(child_uid)
@@ -91,8 +93,10 @@ async def main() -> None:
             websession=websession,
         )
         await api.authenticate()
-        children = await api.get_children()
-        child_uid = children[0].id_
+        user_doc = await api.get_user_document()
+        if not user_doc or not user_doc.childList:
+          return
+        child_uid = user_doc.childList[0].cid
 
         await api.setup_realtime_listener(child_uid, on_sleep_update)
         await api.stop_all_listeners()
@@ -105,7 +109,8 @@ async def main() -> None:
 - `await refresh_auth_token()` - Refresh expired token
 
 ### Children
-- `await get_children()` - Get list of children with profiles
+- `await get_user_document()` - Get full `users/{uid}` document
+- `await get_children(child_uid)` - Get a single child profile by id
 
 ### Sleep Tracking
 - `await start_sleep(child_uid)` - Start sleep session

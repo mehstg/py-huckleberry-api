@@ -101,7 +101,8 @@ async def _child_uids(api: HuckleberryAPI, db: Any) -> list[str]:
     user_doc = await db.collection("users").document(api.user_uid).get()
     user_payload = _doc_to_dict(user_doc)
     if not user_payload:
-        return [child_id for child in await api.get_children() if (child_id := child.id_) is not None]
+        user_model = await api.get_user_document()
+        return [item.cid for item in user_model.childList] if user_model else []
 
     FirebaseUserDocument.model_validate(user_payload)
 
@@ -116,7 +117,8 @@ async def _child_uids(api: HuckleberryAPI, db: Any) -> list[str]:
                     child_uids.append(child_id)
 
     if not child_uids:
-        child_uids = [child_id for child in await api.get_children() if (child_id := child.id_) is not None]
+        user_model = await api.get_user_document()
+        child_uids = [item.cid for item in user_model.childList] if user_model else []
 
     unique_ids: list[str] = []
     seen: set[str] = set()
@@ -183,9 +185,6 @@ async def test_live_latest_sleep_and_diaper_intervals(api: HuckleberryAPI) -> No
             if _is_multi_wrapper(payload):
                 FirebaseSleepMultiContainer.model_validate(payload)
             else:
-                doc_id = getattr(doc, "id", None)
-                if isinstance(doc_id, str):
-                    payload.setdefault("_id", doc_id)
                 FirebaseSleepIntervalData.model_validate(payload)
 
         diaper_ref = db.collection("diaper").document(child_uid).collection("intervals")
@@ -266,9 +265,6 @@ async def test_live_latest_health_pump_activities_and_foods(api: HuckleberryAPI)
             payload = _doc_to_dict(doc)
             if not payload:
                 continue
-            doc_id = getattr(doc, "id", None)
-            if isinstance(doc_id, str):
-                payload.setdefault("id", doc_id)
             FirebaseCustomFoodTypeDocument.model_validate(payload)
 
         pump_ref = db.collection("pump").document(child_uid).collection("intervals")
@@ -279,9 +275,6 @@ async def test_live_latest_health_pump_activities_and_foods(api: HuckleberryAPI)
             if _is_multi_wrapper(payload):
                 FirebasePumpMultiContainer.model_validate(payload)
             else:
-                doc_id = getattr(doc, "id", None)
-                if isinstance(doc_id, str):
-                    payload.setdefault("_id", doc_id)
                 FirebasePumpIntervalData.model_validate(payload)
 
         activities_ref = db.collection("activities").document(child_uid).collection("intervals")
@@ -292,9 +285,6 @@ async def test_live_latest_health_pump_activities_and_foods(api: HuckleberryAPI)
             if _is_multi_wrapper(payload):
                 FirebaseActivityMultiContainer.model_validate(payload)
             else:
-                doc_id = getattr(doc, "id", None)
-                if isinstance(doc_id, str):
-                    payload.setdefault("_id", doc_id)
                 FirebaseActivityIntervalData.model_validate(payload)
 
     if not api.id_token:
@@ -307,10 +297,8 @@ async def test_live_latest_health_pump_activities_and_foods(api: HuckleberryAPI)
         payload = await response.json()
 
     assert isinstance(payload, dict)
-    for food_id, raw_food in payload.items():
+    for raw_food in payload.values():
         if not isinstance(raw_food, dict):
             continue
         entry = dict(raw_food)
-        entry.setdefault("id", food_id)
-        entry.setdefault("source", "curated")
         FirebaseCuratedFoodDocument.model_validate(entry)
