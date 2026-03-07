@@ -80,8 +80,6 @@ TDocumentData = TypeVar(
     FirebaseDiaperDocumentData,
 )
 
-TDiaperOrPottySummaryData = TypeVar("TDiaperOrPottySummaryData", FirebaseLastDiaperData, FirebaseLastPottyData)
-
 _LOGGER = logging.getLogger(__name__)
 
 _FEED_INTERVAL_ADAPTER = TypeAdapter(FirebaseFeedIntervalData)
@@ -1310,24 +1308,18 @@ class HuckleberryAPI:
             _LOGGER.error("Failed to create %s interval: %s", event_kind, err)
             raise
 
-        prefs_entry: TDiaperOrPottySummaryData
+        prefs_entry: FirebaseLastDiaperData | FirebaseLastPottyData
         if pref_field == "lastDiaper":
-            prefs_entry = cast(
-                TDiaperOrPottySummaryData,
-                FirebaseLastDiaperData(
-                    start=current_time,
-                    mode=mode,
-                    offset=current_offset,
-                ),
+            prefs_entry = FirebaseLastDiaperData(
+                start=current_time,
+                mode=mode,
+                offset=current_offset,
             )
         else:
-            prefs_entry = cast(
-                TDiaperOrPottySummaryData,
-                FirebaseLastPottyData(
-                    start=current_time,
-                    mode=mode,
-                    offset=current_offset,
-                ),
+            prefs_entry = FirebaseLastPottyData(
+                start=current_time,
+                mode=mode,
+                offset=current_offset,
             )
 
         try:
