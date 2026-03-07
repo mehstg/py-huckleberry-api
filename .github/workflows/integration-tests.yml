@@ -39,6 +39,7 @@ jobs:
         env:
           HUCKLEBERRY_EMAIL: ${{ secrets.HUCKLEBERRY_EMAIL }}
           HUCKLEBERRY_PASSWORD: ${{ secrets.HUCKLEBERRY_PASSWORD }}
+          HUCKLEBERRY_TIMEZONE: UTC
         run: |
           uv run pytest tests/ -v
 

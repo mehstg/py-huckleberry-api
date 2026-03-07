@@ -1,34 +1,58 @@
 """Solids feeding tests for Huckleberry API."""
+
+import asyncio
 import time
 
 from google.cloud import firestore
 
 from huckleberry_api import HuckleberryAPI
+from huckleberry_api.firebase_types import FirebaseSolidsFeedIntervalData
+from huckleberry_api.models import SolidsFoodReference
 
 
 class TestSolidsFeeding:
     """Test solid food feeding functionality."""
 
-    def test_log_solids_single_food(self, api: HuckleberryAPI, child_uid: str) -> None:
-        """Test logging solids with a single food item."""
-        api.log_solids(child_uid, foods=["banana"])
-        time.sleep(2)
+    async def test_get_curated_foods(self, api: HuckleberryAPI) -> None:
+        """Test fetching curated solids catalog."""
+        curated = await api.list_solids_curated_foods()
 
-        intervals_ref = (
-            api._get_firestore_client()
-            .collection("feed")
-            .document(child_uid)
-            .collection("intervals")
+        assert len(curated) > 0
+        first = curated[0]
+        assert first.id
+        assert first.name
+        assert first.source == "curated"
+
+    async def test_create_and_get_custom_foods(self, api: HuckleberryAPI, child_uid: str) -> None:
+        """Test creating custom food and reading list from Firestore."""
+        unique_name = f"api-test-{int(time.time())}"
+        created = await api.create_solids_custom_food(child_uid, unique_name)
+
+        assert created.id
+        assert created.name == unique_name
+        assert created.source == "custom"
+
+        custom_foods = await api.list_solids_custom_foods(child_uid)
+        assert any(food.id == created.id for food in custom_foods)
+
+    async def test_log_solids_single_curated_food(self, api: HuckleberryAPI, child_uid: str) -> None:
+        """Test logging solids with an existing curated food ID."""
+        curated = await api.list_solids_curated_foods()
+        assert curated
+
+        await api.log_solids(
+            child_uid,
+            foods=[SolidsFoodReference(id=curated[0].id, source="curated", name=curated[0].name, amount="small")],
         )
+        await asyncio.sleep(2)
 
-        recent_intervals = (
-            intervals_ref
-            .order_by("start", direction=firestore.Query.DESCENDING)
-            .limit(1)
-            .get()
-        )
+        db = await api._get_firestore_client()
 
-        intervals_list = list(recent_intervals)
+        intervals_ref = db.collection("feed").document(child_uid).collection("intervals")
+
+        recent_intervals = intervals_ref.order_by("start", direction=firestore.Query.DESCENDING).limit(1)
+
+        intervals_list = list(await recent_intervals.get())
         assert len(intervals_list) > 0
 
         data = intervals_list[0].to_dict()
@@ -39,40 +63,45 @@ class TestSolidsFeeding:
         assert "offset" in data
         assert "foods" in data
 
+        feed_doc = (await db.collection("feed").document(child_uid).get()).to_dict() or {}
+        last_solid = (feed_doc.get("prefs") or {}).get("lastSolid") or {}
+        assert last_solid.get("mode") == "solids"
+        assert isinstance(last_solid.get("start"), (int, float))
+        assert isinstance(last_solid.get("foods"), dict)
+
         # Check foods structure
         foods = data["foods"]
         assert len(foods) == 1
         food_entry = next(iter(foods.values()))
-        assert food_entry["source"] == "custom"
-        assert food_entry["created_name"] == "banana"
+        assert food_entry["source"] == "curated"
+        assert isinstance(food_entry["created_name"], str)
+        assert food_entry["created_name"]
 
-    def test_log_solids_multiple_foods_with_notes_and_reaction(
-        self, api: HuckleberryAPI, child_uid: str
-    ) -> None:
-        """Test logging solids with multiple foods, notes, and reaction."""
-        api.log_solids(
+    async def test_log_solids_multiple_foods_with_custom_and_curated(self, api: HuckleberryAPI, child_uid: str) -> None:
+        """Test logging solids with mixed curated/custom foods, notes, and reaction."""
+        custom_food = await api.create_solids_custom_food(child_uid, f"api-custom-{int(time.time())}")
+        curated = await api.list_solids_curated_foods()
+        assert len(curated) >= 2
+
+        await api.log_solids(
             child_uid,
-            foods=["broccoli", "rice", "potato"],
+            foods=[
+                SolidsFoodReference(id=curated[0].id, source="curated", name=curated[0].name, amount="small"),
+                SolidsFoodReference(id=curated[1].id, source="curated", name=curated[1].name, amount="medium"),
+                SolidsFoodReference(id=custom_food.id, source="custom", name=custom_food.name, amount="small"),
+            ],
             notes="First time trying broccoli",
             reaction="LOVED",
         )
-        time.sleep(2)
+        await asyncio.sleep(2)
 
-        intervals_ref = (
-            api._get_firestore_client()
-            .collection("feed")
-            .document(child_uid)
-            .collection("intervals")
-        )
+        db = await api._get_firestore_client()
 
-        recent_intervals = (
-            intervals_ref
-            .order_by("start", direction=firestore.Query.DESCENDING)
-            .limit(1)
-            .get()
-        )
+        intervals_ref = db.collection("feed").document(child_uid).collection("intervals")
 
-        intervals_list = list(recent_intervals)
+        recent_intervals = intervals_ref.order_by("start", direction=firestore.Query.DESCENDING).limit(1)
+
+        intervals_list = list(await recent_intervals.get())
         assert len(intervals_list) > 0
 
         data = intervals_list[0].to_dict()
@@ -82,33 +111,45 @@ class TestSolidsFeeding:
         assert data.get("notes") == "First time trying broccoli"
         assert data.get("reactions") == {"LOVED": True}
 
-        # Check all food names are present
-        food_names = {v["created_name"] for v in data["foods"].values()}
-        assert food_names == {"broccoli", "rice", "potato"}
+        feed_doc = (await db.collection("feed").document(child_uid).get()).to_dict() or {}
+        last_solid = (feed_doc.get("prefs") or {}).get("lastSolid") or {}
+        assert last_solid.get("mode") == "solids"
+        assert last_solid.get("notes") == "First time trying broccoli"
+        assert last_solid.get("reactions") == {"LOVED": True}
+        assert isinstance(last_solid.get("foods"), dict)
 
-    def test_get_solids_intervals(self, api: HuckleberryAPI, child_uid: str) -> None:
-        """Test retrieving solids intervals."""
-        # Log a solids entry
-        api.log_solids(child_uid, foods=["oatmeal"])
-        time.sleep(2)
+        sources = {v["source"] for v in data["foods"].values()}
+        assert "curated" in sources
+        assert "custom" in sources
 
-        end_ts = int(time.time()) + 60
-        start_ts = end_ts - 300
-
-        entries = api.get_solids_intervals(child_uid, start_ts, end_ts)
-        assert len(entries) > 0
-        assert entries[-1]["mode"] == "solids"
-        assert "foods" in entries[-1]
-
-    def test_solids_in_calendar_events(self, api: HuckleberryAPI, child_uid: str) -> None:
-        """Test that solids entries appear in calendar events."""
-        # Log a solids entry
-        api.log_solids(child_uid, foods=["apple"])
-        time.sleep(2)
+    async def test_solids_entries_are_in_feed_intervals(self, api: HuckleberryAPI, child_uid: str) -> None:
+        """Test retrieving solids entries via feed intervals."""
+        curated = await api.list_solids_curated_foods()
+        await api.log_solids(
+            child_uid,
+            foods=[SolidsFoodReference(id=curated[0].id, source="curated", name=curated[0].name, amount="small")],
+        )
+        await asyncio.sleep(2)
 
         end_ts = int(time.time()) + 60
         start_ts = end_ts - 300
 
-        cal = api.get_calendar_events(child_uid, start_ts, end_ts)
-        assert "solids" in cal
-        assert len(cal["solids"]) > 0
+        entries = await api.list_feed_intervals(child_uid, start_ts, end_ts)
+        solids_entries = [entry for entry in entries if isinstance(entry, FirebaseSolidsFeedIntervalData)]
+        assert len(solids_entries) > 0
+        assert solids_entries[-1].foods is not None
+
+    async def test_solids_in_feed_interval_events(self, api: HuckleberryAPI, child_uid: str) -> None:
+        """Test that solids entries appear in feed interval queries."""
+        curated = await api.list_solids_curated_foods()
+        await api.log_solids(
+            child_uid,
+            foods=[SolidsFoodReference(id=curated[0].id, source="curated", name=curated[0].name, amount="small")],
+        )
+        await asyncio.sleep(2)
+
+        end_ts = int(time.time()) + 60
+        start_ts = end_ts - 300
+
+        feed_entries = await api.list_feed_intervals(child_uid, start_ts, end_ts)
+        assert any(entry.mode == "solids" for entry in feed_entries)

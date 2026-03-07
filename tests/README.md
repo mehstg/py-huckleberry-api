@@ -8,6 +8,7 @@ Integration tests require valid Huckleberry account credentials set as environme
 
 - `HUCKLEBERRY_EMAIL`: Your Huckleberry account email
 - `HUCKLEBERRY_PASSWORD`: Your Huckleberry account password
+- `HUCKLEBERRY_TIMEZONE`: IANA timezone (for example `UTC` or `Europe/London`)
 
 ## Running Tests Locally
 
@@ -21,10 +22,12 @@ uv sync --dev
 # PowerShell
 $env:HUCKLEBERRY_EMAIL = "your-email@example.com"
 $env:HUCKLEBERRY_PASSWORD = "your-password"
+$env:HUCKLEBERRY_TIMEZONE = "UTC"
 
 # Bash/Linux
 export HUCKLEBERRY_EMAIL="your-email@example.com"
 export HUCKLEBERRY_PASSWORD="your-password"
+export HUCKLEBERRY_TIMEZONE="UTC"
 ```
 
 3. Run tests:
@@ -40,6 +43,9 @@ uv run pytest tests/test_authentication.py::TestAuthentication -v
 
 # Run specific test
 uv run pytest tests/test_sleep.py::TestSleepTracking::test_start_and_cancel_sleep -v
+
+# Validate latest live Firebase entries against strict schemas
+uv run pytest tests/test_live_firebase_models.py -q
 ```
 
 ## Test Coverage
@@ -67,7 +73,12 @@ The integration tests are organized into separate modules:
 - **Data Retrieval**: Getting growth history
 
 ### `test_listeners.py`
-- **Real-time Listeners**: Sleep, feeding, and health listeners with token refresh
+- **Real-time Listeners**: Sleep, feeding, diaper, and health listeners with token refresh
+
+### `test_live_firebase_models.py`
+- **Live Schema Validation**: Validates latest live Firebase payloads against strict models in `src/huckleberry_api/firebase_types.py`
+- Run app actions first, then run this test to validate newest entries
+- Optional env var: `HUCKLEBERRY_MODEL_VALIDATION_MAX_DOCS` (default `20`)
 
 ## CI/CD
 
@@ -100,5 +111,5 @@ Tests will automatically skip if:
 
 Full test suite takes approximately 2-3 minutes to run due to:
 - Real Firebase operations with network latency
-- Intentional delays (`time.sleep()`) to allow Firebase propagation
+- Intentional delays (`await asyncio.sleep()`) to allow Firebase propagation
 - Multiple test scenarios with setup/teardown

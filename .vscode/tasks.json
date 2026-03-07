@@ -1,0 +1,36 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Ruff: Check",
+      "type": "shell",
+      "command": "uv",
+      "args": ["run", "ruff", "check", "."],
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "Ruff: Format",
+      "type": "shell",
+      "command": "uv",
+      "args": ["run", "ruff", "format", "."],
+      "problemMatcher": []
+    },
+    {
+      "label": "Ty: Check",
+      "type": "shell",
+      "command": "uv",
+      "args": ["run", "ty", "check", "--python-version", "3.11", "--ignore", "unknown-argument"],
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "Pytest: Tests",
+      "type": "shell",
+      "command": "uv",
+      "args": ["run", "pytest", "tests", "-q"],
+      "group": "test",
+      "problemMatcher": []
+    }
+  ]
+}

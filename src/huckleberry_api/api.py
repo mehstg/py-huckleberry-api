@@ -1,55 +1,89 @@
 """API client for Huckleberry."""
+
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 import uuid
 from datetime import datetime
+from datetime import timezone as dt_timezone
 from typing import Callable, Literal, TypeVar, cast
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
-import requests
+import aiohttp
+from google.api_core.exceptions import GoogleAPICallError
 from google.auth.credentials import Credentials
 from google.cloud import firestore
+from google.cloud.firestore import DELETE_FIELD
+from google.cloud.firestore_v1 import AsyncClient
+from pydantic import TypeAdapter, ValidationError
 
 from .const import AUTH_URL, FIREBASE_API_KEY, REFRESH_URL
-from .types import (
+from .firebase_types import (
     BottleType,
-    ChildData,
-    DiaperDocumentData,
-    FeedDocumentData,
-    FirebaseBottleInterval,
-    FirebaseDiaperInterval,
-    FirebaseFeedDocument,
+    DiaperMode,
+    FeedSide,
+    FirebaseBottleFeedIntervalData,
+    FirebaseChildDocument,
+    FirebaseCuratedFoodDocument,
+    FirebaseCustomFoodTypeDocument,
+    FirebaseDiaperData,
+    FirebaseDiaperDocumentData,
+    FirebaseDiaperMultiContainer,
+    FirebaseDiaperQuantity,
+    FirebaseFeedDocumentData,
+    FirebaseFeedIntervalData,
+    FirebaseFeedMultiContainer,
+    FirebaseFeedTimerData,
     FirebaseGrowthData,
-    FirebaseSleepDocument,
-    FirebaseSolidsInterval,
-    GrowthData,
+    FirebaseHealthDocumentData,
+    FirebaseHealthMultiContainer,
+    FirebaseLastBottleData,
+    FirebaseLastDiaperData,
+    FirebaseLastNursingData,
+    FirebaseLastPottyData,
+    FirebaseLastSideData,
+    FirebaseLastSleepData,
+    FirebaseLastSolidData,
+    FirebaseSleepCondition,
+    FirebaseSleepDetails,
+    FirebaseSleepDocumentData,
+    FirebaseSleepIntervalData,
+    FirebaseSleepLocations,
+    FirebaseSleepMultiContainer,
+    FirebaseSleepTimerData,
+    FirebaseSolidsFeedIntervalData,
+    FirebaseTimestamp,
+    FirebaseUserDocument,
+    HealthDataEntry,
+    PooColor,
+    PooConsistency,
+    PottyResult,
+    SolidsFoodEntry,
     SolidsReaction,
-    HealthDocumentData,
-    LastBottleData,
-    LastDiaperData,
-    LastNursingData,
-    LastSideData,
-    LastSleepData,
-    SleepDocumentData,
     VolumeUnits,
+    to_firebase_dict,
+)
+from .models import SolidsFoodReference
+
+CURATED_FOODS_BUCKET = "simpleintervals.appspot.com"
+CURATED_FOODS_OBJECT = "foods/fooddb.json"
+
+# Type variable for listener callback typing
+TDocumentData = TypeVar(
+    "TDocumentData",
+    FirebaseSleepDocumentData,
+    FirebaseFeedDocumentData,
+    FirebaseHealthDocumentData,
+    FirebaseDiaperDocumentData,
 )
 
-# Type aliases for known string values
-CollectionName = Literal["sleep", "feed", "health", "diaper"]
-FeedSide = Literal["left", "right"]
-DiaperMode = Literal["pee", "poo", "both", "dry"]
-DiaperAmount = Literal["little", "medium", "big"]
-PooColor = Literal["yellow", "brown", "black", "green", "red", "gray"]
-PooConsistency = Literal["solid", "loose", "runny", "mucousy", "hard", "pebbles", "diarrhea"]
-MeasurementUnits = Literal["metric", "imperial"]
-
-# Union type for all document data types used in listeners
-DocumentData = SleepDocumentData | FeedDocumentData | HealthDocumentData | DiaperDocumentData
-TDocumentData = TypeVar('TDocumentData', SleepDocumentData, FeedDocumentData, HealthDocumentData, DiaperDocumentData)
-
 _LOGGER = logging.getLogger(__name__)
+
+_FEED_INTERVAL_ADAPTER = TypeAdapter(FirebaseFeedIntervalData)
+_HEALTH_ENTRY_ADAPTER = TypeAdapter(HealthDataEntry)
 
 
 class FirebaseTokenCredentials(Credentials):
@@ -65,7 +99,7 @@ class FirebaseTokenCredentials(Credentials):
         """Token refresh is handled by HuckleberryAPI.
 
         This method is required by the Credentials interface but is not used.
-        Token refreshing is managed externally by HuckleberryAPI.refresh_auth_token(),
+        Token refreshing is managed externally by HuckleberryAPI.refresh_session_token(),
         and a new FirebaseTokenCredentials instance is created with the refreshed token.
         """
 
@@ -73,85 +107,92 @@ class FirebaseTokenCredentials(Credentials):
 class HuckleberryAPI:
     """API client for Huckleberry."""
 
-    def __init__(self, email: str, password: str, timezone: str) -> None:
+    def __init__(self, email: str, password: str, timezone: str, websession: aiohttp.ClientSession) -> None:
         """Initialize the API client.
 
         Args:
             email: User email for authentication.
             password: User password for authentication.
             timezone: IANA timezone string (e.g., "America/New_York", "Europe/London").
+            websession: Shared aiohttp client session for outbound HTTP requests.
         """
         self.email = email
         self.password = password
+        self.websession = websession
         self.id_token: str | None = None
         self.refresh_token: str | None = None
         self.user_uid: str | None = None
         self.token_expires_at: float | None = None
-        self._firestore_client: firestore.Client | None = None
+        self._firestore_client: AsyncClient | None = None
+        self._firestore_client_loop: asyncio.AbstractEventLoop | None = None
+        self._listener_client: firestore.Client | None = None
         self._timezone = ZoneInfo(timezone)
         self._listeners: dict = {}  # Store active listeners
         self._listener_callbacks: dict = {}  # Store callbacks to recreate listeners
 
-    def authenticate(self) -> None:
+    async def authenticate(self) -> None:
         """Authenticate with Firebase."""
         _LOGGER.debug("Authenticating with Huckleberry")
 
         try:
-            response = requests.post(
+            async with self.websession.post(
                 f"{AUTH_URL}?key={FIREBASE_API_KEY}",
                 json={
                     "email": self.email,
                     "password": self.password,
                     "returnSecureToken": True,
                 },
-                timeout=10,
-            )
-            response.raise_for_status()
-
-            data = response.json()
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as response:
+                response.raise_for_status()
+                data = await response.json()
             self.id_token = data["idToken"]
             self.refresh_token = data["refreshToken"]
             self.user_uid = data["localId"]
             self.token_expires_at = datetime.now().timestamp() + int(data["expiresIn"])
 
             _LOGGER.info("Successfully authenticated with Huckleberry")
-        except requests.exceptions.HTTPError as err:
+        except aiohttp.ClientResponseError as err:
             _LOGGER.error("Authentication failed: %s", err)
-            if err.response is not None:
-                try:
-                    error_data = err.response.json()
-                    error_message = error_data.get("error", {}).get("message", "Unknown error")
-                    _LOGGER.error("Firebase error: %s", error_message)
-                except Exception:
-                    _LOGGER.error("Response: %s", err.response.text)
+            _LOGGER.error("Firebase status error: status=%s message=%s", err.status, err.message)
+            raise
+        except aiohttp.ClientError as err:
+            _LOGGER.error("Authentication request failed: %s", err)
             raise
 
-    def maintain_session(self) -> None:
-        """Ensure the session is valid and refresh token if needed.
+    async def ensure_session(self) -> None:
+        """Ensure there is a valid authenticated session.
 
-        This should be called periodically (e.g. by coordinator) to ensure
-        listeners don't die due to token expiration.
+        This should be called periodically (for example by a coordinator) to keep
+        long-lived listeners healthy across token expiration windows.
         """
-        self._ensure_authenticated()
+        await self._ensure_authenticated()
 
-    def refresh_auth_token(self) -> None:
-        """Refresh the authentication token."""
+    async def refresh_session_token(self) -> None:
+        """Refresh the Firebase authentication token."""
         if not self.refresh_token:
             raise ValueError("No refresh token available")
 
         _LOGGER.debug("Refreshing authentication token")
 
-        response = requests.post(
-            f"{REFRESH_URL}?key={FIREBASE_API_KEY}",
-            json={
-                "grant_type": "refresh_token",
-                "refresh_token": self.refresh_token,
-            },
-            timeout=10,
-        )
-        response.raise_for_status()
+        try:
+            async with self.websession.post(
+                f"{REFRESH_URL}?key={FIREBASE_API_KEY}",
+                json={
+                    "grant_type": "refresh_token",
+                    "refresh_token": self.refresh_token,
+                },
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as response:
+                response.raise_for_status()
+                data = await response.json()
+        except aiohttp.ClientError as err:
+            _LOGGER.error("Failed to refresh authentication token: %s", err)
+            raise
+        except ValueError as err:
+            _LOGGER.error("Invalid refresh token response payload: %s", err)
+            raise
 
-        data = response.json()
         self.id_token = data["id_token"]
         self.refresh_token = data["refresh_token"]
         self.token_expires_at = datetime.now().timestamp() + int(data["expires_in"])
@@ -164,12 +205,13 @@ class HuckleberryAPI:
                 elif hasattr(watch, "close") and callable(getattr(watch, "close")):
                     watch.close()
                 _LOGGER.debug("Stopped listener %s before token refresh", key)
-            except Exception as err:
+            except (AttributeError, RuntimeError, TypeError, ValueError) as err:
                 _LOGGER.error("Error stopping listener %s before refresh: %s", key, err)
         self._listeners.clear()
 
         # Invalidate the Firestore client so it gets recreated with new token
         self._firestore_client = None
+        self._firestore_client_loop = None
 
         _LOGGER.debug("Successfully refreshed authentication token")
 
@@ -179,49 +221,56 @@ class HuckleberryAPI:
         for key, (listener_type, child_uid, callback) in callbacks_copy.items():
             try:
                 if listener_type == "sleep":
-                    self.setup_realtime_listener(child_uid, callback)
+                    await self.setup_sleep_listener(child_uid, callback)
                 elif listener_type == "feed":
-                    self.setup_feed_listener(child_uid, callback)
+                    await self.setup_feed_listener(child_uid, callback)
                 elif listener_type == "health":
-                    self.setup_health_listener(child_uid, callback)
+                    await self.setup_health_listener(child_uid, callback)
                 elif listener_type == "diaper":
-                    self.setup_diaper_listener(child_uid, callback)
+                    await self.setup_diaper_listener(child_uid, callback)
                 _LOGGER.debug("Recreated %s listener for child %s", listener_type, child_uid)
-            except Exception as err:
+            except (GoogleAPICallError, RuntimeError, TypeError, ValueError) as err:
                 _LOGGER.error("Error recreating %s listener for child %s: %s", listener_type, child_uid, err)
 
-    def _ensure_authenticated(self) -> None:
+    async def _ensure_authenticated(self) -> None:
         """Ensure we have a valid authentication token."""
         if not self.id_token:
-            self.authenticate()
+            await self.authenticate()
         elif self.token_expires_at and datetime.now().timestamp() >= self.token_expires_at - 300:
             # Refresh if token expires in less than 5 minutes
-            self.refresh_auth_token()
+            await self.refresh_session_token()
 
-    def _get_headers(self) -> dict[str, str]:
+    async def _get_headers(self) -> dict[str, str]:
         """Get headers for API requests."""
-        self._ensure_authenticated()
+        await self._ensure_authenticated()
         return {
             "Authorization": f"Bearer {self.id_token}",
             "Content-Type": "application/json",
         }
 
-    def _get_firestore_client(self) -> firestore.Client:
+    async def _get_firestore_client(self) -> AsyncClient:
         """Get or create Firestore client."""
-        self._ensure_authenticated()
+        await self._ensure_authenticated()
+        current_loop = asyncio.get_running_loop()
 
-        # Create new client if token changed or client doesn't exist
+        # Recreate when missing or when crossing asyncio event loop boundaries.
+        # grpc.aio channels are loop-bound and cannot be reused across loops.
+        if self._firestore_client and self._firestore_client_loop is not current_loop:
+            self._firestore_client = None
+            self._firestore_client_loop = None
+
         if not self._firestore_client:
             assert self.id_token is not None, "id_token should be set after authentication"
             credentials = FirebaseTokenCredentials(self.id_token)
-            self._firestore_client = firestore.Client(
+            self._firestore_client = AsyncClient(
                 project="simpleintervals",
                 credentials=credentials,
             )
+            self._firestore_client_loop = current_loop
 
         return self._firestore_client
 
-    def _get_timezone_offset_minutes(self) -> float:
+    async def _get_timezone_offset_minutes(self) -> float:
         """Get current timezone offset in minutes.
 
         Calculates offset dynamically to handle DST changes.
@@ -233,84 +282,54 @@ class HuckleberryAPI:
             return 0.0
         return -offset.total_seconds() / 60
 
-    def get_children(self) -> list[ChildData]:
-        """Get list of children from user profile."""
-        _LOGGER.debug("Fetching children list")
+    async def get_child(self, child_uid: str) -> FirebaseChildDocument | None:
+        """Get a single child document by child UID."""
+        _LOGGER.debug("Fetching child document for %s", child_uid)
 
         try:
-            # Get Firestore client
-            db = self._get_firestore_client()
+            db = await self._get_firestore_client()
+            child_doc_ref = db.collection("childs").document(child_uid)
+            child_doc = await child_doc_ref.get()
 
-            # Get user document which contains lastChild reference
-            user_ref = db.collection("users").document(self.user_uid)
-            user_doc = user_ref.get()
+            if not child_doc.exists:
+                _LOGGER.warning("Child document not found: %s", child_uid)
+                return None
 
-            if not user_doc.exists:
-                _LOGGER.error("User document not found")
-                return []
+            child_data = child_doc.to_dict()
+            if not child_data:
+                _LOGGER.warning("Child document has no data: %s", child_uid)
+                return None
 
-            user_data = user_doc.to_dict()
-            if not user_data:
-                _LOGGER.error("User document has no data")
-                return []
+            return FirebaseChildDocument.model_validate(child_data)
 
-            child_list = user_data.get("childList")
-            if not child_list:
-                _LOGGER.error("No childList found in user document")
-                return []
-
-            children = []
-            for child in user_data.get("childList"):
-                child_id = child.get("cid")
-
-                if not child_id:
-                    _LOGGER.warning("Child id not found in childList")
-                    return []
-
-                # Get child document
-                child_ref = db.collection("childs").document(child_id)
-                child_doc = child_ref.get()
-
-                if not child_doc.exists:
-                    _LOGGER.error("Child document not found: %s", child_id)
-                    return []
-
-                child_data = child_doc.to_dict()
-                if not child_data:
-                    _LOGGER.error("Child document has no data: %s", child_id)
-                    return []
-
-                # Name may appear as 'childsName' in some documents
-                display_name = child_data.get("name") or child_data.get("childsName") or "Unknown"
-
-                child: ChildData = {
-                    "uid": child_id,
-                    "name": display_name,
-                    "birthday": child_data.get("birthdate"),
-                    "picture": child_data.get("picture"),
-                    "gender": child_data.get("gender"),
-                    "color": child_data.get("color"),
-                    "created_at": child_data.get("createdAt"),
-                    "night_start_min": child_data.get("nightStart"),
-                    "morning_cutoff_min": child_data.get("morningCutoff"),
-                    "expected_naps": child_data.get("naps"),
-                    "categories": child_data.get("categories"),
-                }
-
-                children.append(child)
-
-            _LOGGER.info("Found %d children", len(children))
-            return children
-
-        except Exception as err:
-            _LOGGER.error("Failed to get children: %s", err)
+        except (GoogleAPICallError, ValidationError, RuntimeError, TypeError, ValueError) as err:
+            _LOGGER.error("Failed to get child %s: %s", child_uid, err)
             raise
 
-    def start_sleep(self, child_uid: str) -> None:
+    async def get_user(self) -> FirebaseUserDocument | None:
+        """Get full users/{uid} document as strict Firebase model."""
+        _LOGGER.debug("Fetching user document")
+
+        db = await self._get_firestore_client()
+        user_ref = db.collection("users").document(self.user_uid)
+        user_doc = await user_ref.get()
+
+        if not user_doc.exists:
+            _LOGGER.error("User document not found")
+            return None
+
+        user_data = user_doc.to_dict()
+        if not user_data:
+            _LOGGER.error("User document has no data")
+            return None
+
+        return FirebaseUserDocument.model_validate(user_data)
+
+    async def start_sleep(self, child_uid: str) -> None:
         """Start sleep tracking for a child."""
         _LOGGER.info("Starting sleep tracking for child %s", child_uid)
 
-        client = self._get_firestore_client()
+        client = await self._get_firestore_client()
         sleep_ref = client.collection("sleep").document(child_uid)
 
         current_time = time.time()
@@ -321,64 +340,67 @@ class HuckleberryAPI:
 
         # Update the timer field to mark sleep as active
         # Match the structure from the Huckleberry app
-        sleep_data: FirebaseSleepDocument = {
-            "timer": {
-                "active": True,
-                "paused": False,
-                "timestamp": {"seconds": current_time},
-                "local_timestamp": current_time,
-                "timerStartTime": current_time_ms,  # Milliseconds timestamp
-                "uuid": session_uuid,  # Unique session identifier
-                "details": {
-                    "startSleepCondition": {
-                        "happy": False,
-                        "longTimeToFallAsleep": False,
-                        "10-20_minutes": False,
-                        "upset": False,
-                        "under_10_minutes": False,
-                    },
-                    "sleepLocations": {
-                        "car": False,
-                        "nursing": False,
-                        "wornOrHeld": False,
-                        "stroller": False,
-                        "coSleep": False,
-                        "nextToCarer": False,
-                        "onOwnInBed": False,
-                        "bottle": False,
-                        "swing": False,
-                    },
-                    "endSleepCondition": {
-                        "happy": False,
-                        "wokeUpChild": False,
-                        "upset": False,
-                    },
-                },
-            }
-        }
-        sleep_ref.set(cast(dict, sleep_data), merge=True)
+        sleep_data = FirebaseSleepDocumentData(
+            timer=FirebaseSleepTimerData(
+                active=True,
+                paused=False,
+                timestamp=FirebaseTimestamp(seconds=current_time),
+                local_timestamp=current_time,
+                timerStartTime=current_time_ms,
+                uuid=session_uuid,
+                details=FirebaseSleepDetails(
+                    startSleepCondition=FirebaseSleepCondition.model_validate(
+                        {
+                            "happy": False,
+                            "longTimeToFallAsleep": False,
+                            "10-20_minutes": False,
+                            "upset": False,
+                            "under_10_minutes": False,
+                        }
+                    ),
+                    sleepLocations=FirebaseSleepLocations(
+                        car=False,
+                        nursing=False,
+                        wornOrHeld=False,
+                        stroller=False,
+                        coSleep=False,
+                        nextToCarer=False,
+                        onOwnInBed=False,
+                        bottle=False,
+                        swing=False,
+                    ),
+                    endSleepCondition=FirebaseSleepCondition(
+                        happy=False,
+                        wokeUpChild=False,
+                        upset=False,
+                    ),
+                ),
+            )
+        )
+        await sleep_ref.set(to_firebase_dict(sleep_data), merge=True)
 
         _LOGGER.info("Sleep tracking started successfully")
 
-    def pause_sleep(self, child_uid: str) -> None:
+    async def pause_sleep(self, child_uid: str) -> None:
         """Pause current sleep session without ending it."""
         _LOGGER.info("Pausing sleep for child %s", child_uid)
 
-        client = self._get_firestore_client()
+        client = await self._get_firestore_client()
         sleep_ref = client.collection("sleep").document(child_uid)
 
         # Check if timer is active
-        sleep_doc = sleep_ref.get(timeout=10.0)
+        sleep_doc = await sleep_ref.get(timeout=10.0)
         if not sleep_doc.exists:
             _LOGGER.warning("No sleep document to pause for %s", child_uid)
             return
 
-        timer = sleep_doc.to_dict().get("timer", {})
-        if not timer.get("active", False):
+        sleep_data = FirebaseSleepDocumentData.model_validate(sleep_doc.to_dict() or {})
+        timer = sleep_data.timer
+        if not timer or not timer.active:
             _LOGGER.info("Sleep is not active for %s, ignoring pause request", child_uid)
             return
 
-        if timer.get("paused", False):
+        if timer.paused:
             _LOGGER.info("Sleep is already paused for %s", child_uid)
             return
 
@@ -386,63 +408,68 @@ class HuckleberryAPI:
         timer_end_time_ms = now * 1000  # Convert to milliseconds
 
         # Add timerEndTime field that app uses to show end time when paused
-        sleep_ref.update({
-            "timer.paused": True,
-            "timer.active": True,
-            "timer.timerEndTime": timer_end_time_ms,
-            "timer.timestamp": {"seconds": now},
-            "timer.local_timestamp": now,
-        })
+        await sleep_ref.update(
+            {
+                "timer.paused": True,
+                "timer.active": True,
+                "timer.timerEndTime": timer_end_time_ms,
+                "timer.timestamp": {"seconds": now},
+                "timer.local_timestamp": now,
+            }
+        )
 
         _LOGGER.info("Sleep paused for child %s", child_uid)
 
-    def resume_sleep(self, child_uid: str) -> None:
+    async def resume_sleep(self, child_uid: str) -> None:
         """Resume a paused sleep session."""
         _LOGGER.info("Resuming sleep for child %s", child_uid)
 
-        client = self._get_firestore_client()
+        client = await self._get_firestore_client()
         sleep_ref = client.collection("sleep").document(child_uid)
 
         # Check if timer is active and paused
-        sleep_doc = sleep_ref.get(timeout=10.0)
+        sleep_doc = await sleep_ref.get(timeout=10.0)
         if not sleep_doc.exists:
             _LOGGER.warning("No sleep document to resume for %s", child_uid)
             return
 
-        timer = sleep_doc.to_dict().get("timer", {})
-        if not timer.get("active", False):
+        sleep_data = FirebaseSleepDocumentData.model_validate(sleep_doc.to_dict() or {})
+        timer = sleep_data.timer
+        if not timer or not timer.active:
             _LOGGER.info("Sleep is not active for %s, ignoring resume request", child_uid)
             return
 
-        if not timer.get("paused", False):
+        if not timer.paused:
             _LOGGER.info("Sleep is not paused for %s, ignoring resume request", child_uid)
             return
 
         now = time.time()
-        sleep_ref.update({
-            "timer.paused": False,
-            "timer.active": True,
-            "timer.timestamp": {"seconds": now},
-            "timer.local_timestamp": now,
-        })
+        await sleep_ref.update(
+            {
+                "timer.paused": False,
+                "timer.active": True,
+                "timer.timestamp": {"seconds": now},
+                "timer.local_timestamp": now,
+            }
+        )
 
         _LOGGER.info("Sleep resumed for child %s", child_uid)
 
-    def cancel_sleep(self, child_uid: str) -> None:
+    async def cancel_sleep(self, child_uid: str) -> None:
         """Cancel current sleep session without saving an interval."""
         _LOGGER.info("Cancelling current sleep for child %s", child_uid)
 
-        client = self._get_firestore_client()
+        client = await self._get_firestore_client()
         sleep_ref = client.collection("sleep").document(child_uid)
 
         # Check current state
-        doc = sleep_ref.get(timeout=10.0)
+        doc = await sleep_ref.get(timeout=10.0)
         if doc.exists:
-            timer_data = doc.to_dict()
-            if timer_data:
-                timer = timer_data.get("timer", {})
-                _LOGGER.info("Current timer state: active=%s, paused=%s", timer.get("active"), timer.get("paused"))
-                session_uuid = timer.get("uuid", uuid.uuid4().hex[:16])
+            sleep_data = FirebaseSleepDocumentData.model_validate(doc.to_dict() or {})
+            timer = sleep_data.timer
+            if timer:
+                _LOGGER.info("Current timer state: active=%s, paused=%s", timer.active, timer.paused)
+                session_uuid = timer.uuid
             else:
                 session_uuid = uuid.uuid4().hex[:16]
         else:
@@ -451,56 +478,58 @@ class HuckleberryAPI:
 
         # Set timer to inactive (don't delete it - app expects it to remain)
         current_time = time.time()
-        sleep_ref.update({
-            "timer": {
-                "active": False,
-                "paused": False,
-                "timestamp": {"seconds": current_time},
-                "timerStartTime": None,
-                "uuid": session_uuid,
-                "local_timestamp": current_time,
-            },
-        })
+        await sleep_ref.update(
+            {
+                "timer": {
+                    "active": False,
+                    "paused": False,
+                    "timestamp": {"seconds": current_time},
+                    "timerStartTime": None,
+                    "uuid": session_uuid,
+                    "local_timestamp": current_time,
+                },
+            }
+        )
 
         _LOGGER.info("Sleep cancelled for child %s", child_uid)
 
-    def complete_sleep(self, child_uid: str) -> None:
+    async def complete_sleep(self, child_uid: str) -> None:
         """Complete current sleep session and save interval."""
         _LOGGER.info("Completing sleep for child %s", child_uid)
 
-        client = self._get_firestore_client()
+        client = await self._get_firestore_client()
         sleep_ref = client.collection("sleep").document(child_uid)
 
-        sleep_doc = sleep_ref.get(timeout=10.0)
+        sleep_doc = await sleep_ref.get(timeout=10.0)
         if not sleep_doc.exists:
             _LOGGER.warning("No active sleep document to complete for %s", child_uid)
             return
 
-        data = sleep_doc.to_dict() or {}
-        timer = data.get("timer") or {}
+        sleep_data = FirebaseSleepDocumentData.model_validate(sleep_doc.to_dict() or {})
+        timer = sleep_data.timer
 
         # Check if timer is already inactive (already completed)
-        if not timer.get("active", False):
+        if not timer or not timer.active:
             _LOGGER.info("Sleep already completed for %s, ignoring duplicate request", child_uid)
             return
 
-        timer_start_ms = timer.get("timerStartTime")
+        timer_start_ms = timer.timerStartTime
         if not timer_start_ms:
             # Attempt fallback: reconstruct using timestamp.seconds if available
-            ts_seconds = timer.get("timestamp", {}).get("seconds")
+            ts_seconds = timer.timestamp.seconds if timer.timestamp else None
             if ts_seconds:
                 timer_start_ms = int(float(ts_seconds) * 1000)
                 _LOGGER.warning("timerStartTime missing; falling back to timestamp.seconds for %s", child_uid)
             else:
                 _LOGGER.warning("Missing timerStartTime; cannot compute duration for %s", child_uid)
-                sleep_ref.update({"timer": firestore.DELETE_FIELD})
+                await sleep_ref.update({"timer": firestore.DELETE_FIELD})
                 return
 
         now_ms = time.time() * 1000
 
         # If sleep is paused, use timerEndTime as the end time (not current time)
-        if timer.get("paused", False) and "timerEndTime" in timer:
-            end_ms = timer["timerEndTime"]
+        if timer.paused and timer.timerEndTime is not None:
+            end_ms = timer.timerEndTime
             _LOGGER.info("Sleep is paused, using timerEndTime for completion")
         else:
             end_ms = now_ms
@@ -510,206 +539,206 @@ class HuckleberryAPI:
 
         intervals_ref = sleep_ref.collection("intervals")
         interval_id = uuid.uuid4().hex[:16]
-        intervals_ref.document(interval_id).set({
-            "_id": interval_id,
-            "start": start_sec,
-            "duration": duration_sec,
-            "offset": self._get_timezone_offset_minutes(),
-            "end_offset": self._get_timezone_offset_minutes(),
-            "details": timer.get("details", {}),
-            "lastUpdated": time.time(),
-        })
+        sleep_interval = FirebaseSleepIntervalData(
+            start=start_sec,
+            duration=duration_sec,
+            offset=await self._get_timezone_offset_minutes(),
+            end_offset=await self._get_timezone_offset_minutes(),
+            details=timer.details,
+            lastUpdated=time.time(),
+        )
+        await intervals_ref.document(interval_id).set(to_firebase_dict(sleep_interval))
 
         # Set timer to inactive (match stop_sleep behavior)
         current_time = time.time()
-        session_uuid = timer.get("uuid", uuid.uuid4().hex[:16])
+        session_uuid = timer.uuid
 
-        last_sleep_data: LastSleepData = {
-            "start": start_sec,
-            "duration": duration_sec,
-            "offset": self._get_timezone_offset_minutes(),
-        }
+        last_sleep_data = FirebaseLastSleepData(
+            start=start_sec,
+            duration=duration_sec,
+            offset=await self._get_timezone_offset_minutes(),
+        )
 
-        sleep_ref.update({
-            "timer": {
-                "active": False,
-                "paused": False,
-                "timestamp": {"seconds": current_time},
-                "timerStartTime": None,
-                "uuid": session_uuid,
-                "local_timestamp": current_time,
-            },
-            "prefs.lastSleep": last_sleep_data,
-            "prefs.timestamp": {"seconds": current_time},
-            "prefs.local_timestamp": current_time,
-        })
+        await sleep_ref.update(
+            {
+                "timer": {
+                    "active": False,
+                    "paused": False,
+                    "timestamp": {"seconds": current_time},
+                    "timerStartTime": None,
+                    "uuid": session_uuid,
+                    "local_timestamp": current_time,
+                },
+                "prefs.lastSleep": to_firebase_dict(last_sleep_data),
+                "prefs.timestamp": {"seconds": current_time},
+                "prefs.local_timestamp": current_time,
+            }
+        )
 
         _LOGGER.info("Sleep completed for child %s (duration %ss)", child_uid, duration_sec)
 
-    def start_feeding(self, child_uid: str, side: FeedSide = "left") -> None:
-        """Start feeding tracking."""
-        _LOGGER.info("Starting feeding for child %s on %s side", child_uid, side)
+    async def start_nursing(self, child_uid: str, side: FeedSide = "left") -> None:
+        """Start nursing tracking."""
+        _LOGGER.info("Starting nursing for child %s on %s side", child_uid, side)
 
-        client = self._get_firestore_client()
+        client = await self._get_firestore_client()
         feed_ref = client.collection("feed").document(child_uid)
 
         current_time = time.time()
 
         session_uuid = uuid.uuid4().hex[:16]
 
-        feed_data: FirebaseFeedDocument = {
-            "timer": {
-                "active": True,
-                "paused": False,
-                "timestamp": {"seconds": current_time},
-                "local_timestamp": current_time,
-                "feedStartTime": current_time,
-                "timerStartTime": current_time,
-                "uuid": session_uuid,
-                "leftDuration": 0.0,
-                "rightDuration": 0.0,
-                "lastSide": "left",  # Always start with lastSide as left
-                "activeSide": side,  # activeSide indicates which side is currently feeding
-            }
-        }
-        feed_ref.set(cast(dict, feed_data), merge=True)
+        feed_data = FirebaseFeedDocumentData(
+            timer=FirebaseFeedTimerData(
+                active=True,
+                paused=False,
+                timestamp=FirebaseTimestamp(seconds=current_time),
+                local_timestamp=current_time,
+                feedStartTime=current_time,
+                timerStartTime=current_time,
+                uuid=session_uuid,
+                leftDuration=0.0,
+                rightDuration=0.0,
+                lastSide="left",
+                activeSide=side,
+            )
+        )
+        await feed_ref.set(to_firebase_dict(feed_data), merge=True)
 
-        _LOGGER.info("Feeding started on %s side", side)
+        _LOGGER.info("Nursing started on %s side", side)
 
-    def pause_feeding(self, child_uid: str) -> None:
-        """Pause current feeding session."""
-        _LOGGER.info("Pausing feeding for child %s", child_uid)
+    async def pause_nursing(self, child_uid: str) -> None:
+        """Pause current nursing session."""
+        _LOGGER.info("Pausing nursing for child %s", child_uid)
 
-        client = self._get_firestore_client()
+        client = await self._get_firestore_client()
         feed_ref = client.collection("feed").document(child_uid)
 
-        doc = feed_ref.get(timeout=10.0)
+        doc = await feed_ref.get(timeout=10.0)
         if not doc.exists:
             _LOGGER.warning("Feed document not found")
             return
 
-        timer_data = doc.to_dict()
-        if not timer_data:
-            _LOGGER.warning("Feed document has no data")
+        feed_data = FirebaseFeedDocumentData.model_validate(doc.to_dict() or {})
+        timer = feed_data.timer
+        if not timer:
+            _LOGGER.warning("Feed document has no timer")
             return
 
-        timer = timer_data.get("timer", {})
-
-        if not timer.get("active", False):
-            _LOGGER.info("Feeding is not active for %s, ignoring pause request", child_uid)
+        if not timer.active:
+            _LOGGER.info("Nursing is not active for %s, ignoring pause request", child_uid)
             return
 
-        if timer.get("paused", False):
-            _LOGGER.info("Feeding is already paused for %s", child_uid)
+        if timer.paused:
+            _LOGGER.info("Nursing is already paused for %s", child_uid)
             return
-        current_side = timer.get("activeSide", timer.get("lastSide", "left"))
+        current_side = timer.activeSide or timer.lastSide or "left"
 
         # Calculate elapsed time and accumulate to current side
         now = time.time()
-        timer_start = timer.get("timerStartTime", now)
+        timer_start = timer.timerStartTime or now
         elapsed = now - timer_start
 
-        left_duration = timer.get("leftDuration", 0.0)
-        right_duration = timer.get("rightDuration", 0.0)
+        left_duration = timer.leftDuration or 0.0
+        right_duration = timer.rightDuration or 0.0
 
         if current_side == "left":
             left_duration += elapsed
         else:
             right_duration += elapsed
 
-        feed_ref.update({
-            "timer.paused": True,
-            "timer.active": True,
-            "timer.timestamp": {"seconds": now},
-            "timer.local_timestamp": now,
-            "timer.leftDuration": left_duration,
-            "timer.rightDuration": right_duration,
-            "timer.lastSide": current_side,
-        })
+        await feed_ref.update(
+            {
+                "timer.paused": True,
+                "timer.active": True,
+                "timer.timestamp": {"seconds": now},
+                "timer.local_timestamp": now,
+                "timer.leftDuration": left_duration,
+                "timer.rightDuration": right_duration,
+                "timer.lastSide": current_side,
+                "timer.activeSide": DELETE_FIELD,
+            }
+        )
 
-        # Remove activeSide when paused
-        from google.cloud.firestore import DELETE_FIELD
-        feed_ref.update({"timer.activeSide": DELETE_FIELD})
+        _LOGGER.info("Nursing paused (L:%ss R:%ss)", left_duration, right_duration)
 
-        _LOGGER.info("Feeding paused (L:%ss R:%ss)", left_duration, right_duration)
+    async def resume_nursing(self, child_uid: str, side: FeedSide | None = None) -> None:
+        """Resume paused nursing session."""
+        _LOGGER.info("Resuming nursing for child %s", child_uid)
 
-    def resume_feeding(self, child_uid: str, side: FeedSide | None = None) -> None:
-        """Resume paused feeding session."""
-        _LOGGER.info("Resuming feeding for child %s", child_uid)
-
-        client = self._get_firestore_client()
+        client = await self._get_firestore_client()
         feed_ref = client.collection("feed").document(child_uid)
 
-        doc = feed_ref.get(timeout=10.0)
+        doc = await feed_ref.get(timeout=10.0)
         if not doc.exists:
             _LOGGER.warning("Feed document not found")
             return
 
-        timer_data = doc.to_dict()
-        if not timer_data:
-            _LOGGER.warning("Feed document has no data")
+        feed_data = FirebaseFeedDocumentData.model_validate(doc.to_dict() or {})
+        timer = feed_data.timer
+        if not timer:
+            _LOGGER.warning("Feed document has no timer")
             return
 
-        timer = timer_data.get("timer", {})
-
-        if not timer.get("active", False):
-            _LOGGER.info("Feeding is not active for %s, ignoring resume request", child_uid)
+        if not timer.active:
+            _LOGGER.info("Nursing is not active for %s, ignoring resume request", child_uid)
             return
 
-        if not timer.get("paused", False):
-            _LOGGER.info("Feeding is not paused for %s, ignoring resume request", child_uid)
+        if not timer.paused:
+            _LOGGER.info("Nursing is not paused for %s, ignoring resume request", child_uid)
             return
         if side is None:
-            side = timer.get("lastSide", "left")
+            side = timer.lastSide or "left"
 
         now = time.time()
 
-        feed_ref.update({
-            "timer.paused": False,
-            "timer.active": True,
-            "timer.timestamp": {"seconds": now},
-            "timer.local_timestamp": now,
-            "timer.timerStartTime": now,  # Reset timer start time on resume
-            "timer.activeSide": side,
-            "timer.lastSide": "none",  # Set to none during transition
-        })
+        await feed_ref.update(
+            {
+                "timer.paused": False,
+                "timer.active": True,
+                "timer.timestamp": {"seconds": now},
+                "timer.local_timestamp": now,
+                "timer.timerStartTime": now,  # Reset timer start time on resume
+                "timer.activeSide": side,
+                "timer.lastSide": "none",  # Set to none during transition
+            }
+        )
 
-        _LOGGER.info("Feeding resumed on %s", side)
+        _LOGGER.info("Nursing resumed on %s", side)
 
-    def switch_feeding_side(self, child_uid: str) -> None:
-        """Switch feeding side (left <-> right)."""
-        _LOGGER.info("Switching feeding side for child %s", child_uid)
+    async def switch_nursing_side(self, child_uid: str) -> None:
+        """Switch nursing side (left <-> right)."""
+        _LOGGER.info("Switching nursing side for child %s", child_uid)
 
-        client = self._get_firestore_client()
+        client = await self._get_firestore_client()
         feed_ref = client.collection("feed").document(child_uid)
 
-        doc = feed_ref.get(timeout=10.0)
+        doc = await feed_ref.get(timeout=10.0)
         if not doc.exists:
             _LOGGER.warning("Feed document not found")
             return
 
-        timer_data = doc.to_dict()
-        if not timer_data:
-            _LOGGER.warning("Feed document has no data")
+        feed_data = FirebaseFeedDocumentData.model_validate(doc.to_dict() or {})
+        timer = feed_data.timer
+        if not timer:
+            _LOGGER.warning("Feed document has no timer")
             return
 
-        timer = timer_data.get("timer", {})
-
-        if not timer.get("active", False):
-            _LOGGER.info("Feeding is not active for %s, ignoring switch request", child_uid)
+        if not timer.active:
+            _LOGGER.info("Nursing is not active for %s, ignoring switch request", child_uid)
             return
-        current_side = timer.get("activeSide", timer.get("lastSide", "left"))
+        current_side = timer.activeSide or timer.lastSide or "left"
         new_side = "right" if current_side == "left" else "left"
-        is_paused = timer.get("paused", False)
+        is_paused = timer.paused
 
         now = time.time()
-        left_duration = timer.get("leftDuration", 0.0)
-        right_duration = timer.get("rightDuration", 0.0)
+        left_duration = timer.leftDuration or 0.0
+        right_duration = timer.rightDuration or 0.0
 
         # Only accumulate duration if NOT paused
         if not is_paused:
             # Calculate duration since timer started and accumulate to current side
-            timer_start = timer.get("timerStartTime", now)
+            timer_start = timer.timerStartTime or now
             elapsed = now - timer_start
 
             if current_side == "left":
@@ -728,81 +757,83 @@ class HuckleberryAPI:
             "timer.rightDuration": right_duration,
         }
 
-        feed_ref.update(update_data)
+        await feed_ref.update(update_data)
 
         _LOGGER.info("Switched from %s to %s (L:%ss R:%ss)", current_side, new_side, left_duration, right_duration)
 
-    def cancel_feeding(self, child_uid: str) -> None:
-        """Cancel current feeding without saving."""
-        _LOGGER.info("Cancelling feeding for child %s", child_uid)
+    async def cancel_nursing(self, child_uid: str) -> None:
+        """Cancel current nursing without saving."""
+        _LOGGER.info("Cancelling nursing for child %s", child_uid)
 
-        client = self._get_firestore_client()
+        client = await self._get_firestore_client()
         feed_ref = client.collection("feed").document(child_uid)
 
-        doc = feed_ref.get(timeout=10.0)
+        doc = await feed_ref.get(timeout=10.0)
         if doc.exists:
-            timer_data = doc.to_dict()
-            if timer_data:
-                timer = timer_data.get("timer", {})
-                session_uuid = timer.get("uuid", uuid.uuid4().hex[:16])
+            feed_data = FirebaseFeedDocumentData.model_validate(doc.to_dict() or {})
+            timer = feed_data.timer
+            if timer:
+                session_uuid = timer.uuid
             else:
                 session_uuid = uuid.uuid4().hex[:16]
         else:
             session_uuid = uuid.uuid4().hex[:16]
 
         current_time = time.time()
-        feed_ref.update({
-            "timer": {
-                "active": False,
-                "paused": False,
-                "timestamp": {"seconds": current_time},
-                "timerStartTime": None,
-                "uuid": session_uuid,
-                "local_timestamp": current_time,
-                "leftDuration": 0.0,
-                "rightDuration": 0.0,
-                "lastSide": "left",
-            },
-        })
+        await feed_ref.update(
+            {
+                "timer": {
+                    "active": False,
+                    "paused": False,
+                    "timestamp": {"seconds": current_time},
+                    "timerStartTime": None,
+                    "uuid": session_uuid,
+                    "local_timestamp": current_time,
+                    "leftDuration": 0.0,
+                    "rightDuration": 0.0,
+                    "lastSide": "left",
+                },
+            }
+        )
 
-        _LOGGER.info("Feeding cancelled")
+        _LOGGER.info("Nursing cancelled")
 
-    def complete_feeding(self, child_uid: str) -> None:
-        """Complete current feeding and save to history."""
-        _LOGGER.info("Completing feeding for child %s", child_uid)
+    async def complete_nursing(self, child_uid: str) -> None:
+        """Complete current nursing and save to history."""
+        _LOGGER.info("Completing nursing for child %s", child_uid)
 
-        client = self._get_firestore_client()
+        client = await self._get_firestore_client()
         feed_ref = client.collection("feed").document(child_uid)
 
-        doc = feed_ref.get(timeout=10.0)
+        doc = await feed_ref.get(timeout=10.0)
         if not doc.exists:
             _LOGGER.warning("No active feed document to complete")
             return
 
-        data = doc.to_dict() or {}
-        timer = data.get("timer") or {}
+        feed_data = FirebaseFeedDocumentData.model_validate(doc.to_dict() or {})
+        timer = feed_data.timer
 
         # Check if timer is already inactive (already completed)
-        if not timer.get("active", False):
-            _LOGGER.info("Feeding already completed for %s, ignoring duplicate request", child_uid)
+        if not timer or not timer.active:
+            _LOGGER.info("Nursing already completed for %s, ignoring duplicate request", child_uid)
             return
 
-        timer_start = timer.get("timerStartTime")
+        timer_start = timer.timerStartTime
         if not timer_start:
-            _LOGGER.warning("Missing timerStartTime for feeding")
+            _LOGGER.warning("Missing timerStartTime for nursing")
             return
 
         now_time = time.time()
         # timerStartTime is in seconds for feeding
         timer_start_sec = float(timer_start)
 
-        left_duration = timer.get("leftDuration", 0.0)
-        right_duration = timer.get("rightDuration", 0.0)
+        left_duration = timer.leftDuration or 0.0
+        right_duration = timer.rightDuration or 0.0
 
         # Add elapsed time on current side if not paused
-        if not timer.get("paused", False):
+        if not timer.paused:
             elapsed = now_time - timer_start_sec
-            current_side = timer.get("activeSide", timer.get("lastSide", "left"))
+            current_side = timer.activeSide or timer.lastSide or "left"
 
             if current_side == "left":
                 left_duration += elapsed
@@ -812,15 +843,12 @@ class HuckleberryAPI:
         # Calculate total duration from accumulated durations
         total_duration = left_duration + right_duration
 
-        session_uuid = timer.get("uuid", uuid.uuid4().hex[:16])
-        feed_start_time = timer.get("feedStartTime", timer_start_sec)
+        feed_start_time = timer.feedStartTime or timer_start_sec
 
         # Determine last side for history
-        last_side_value = timer.get("activeSide", timer.get("lastSide", "right"))
+        last_side_value = timer.activeSide or timer.lastSide or "right"
         if last_side_value == "none":
             last_side_value = "right" if right_duration >= left_duration else "left"
-
-        from google.cloud.firestore import DELETE_FIELD
 
         # Create interval document ID (format: timestamp-random)
         interval_id = f"{int(now_time * 1000)}-{uuid.uuid4().hex[:20]}"
@@ -828,55 +856,60 @@ class HuckleberryAPI:
         # Create interval document for history (feed/{child_uid}/intervals)
         feed_intervals_ref = feed_ref.collection("intervals").document(interval_id)
 
-        try:
-            feed_intervals_ref.set({
-                "mode": "breast",
-                "start": feed_start_time,
-                "lastSide": last_side_value,
-                "lastUpdated": now_time,
-                "leftDuration": left_duration,
-                "rightDuration": right_duration,
-                "offset": self._get_timezone_offset_minutes(),
-                "end_offset": self._get_timezone_offset_minutes(),
-            })
-            _LOGGER.info("Created feeding interval entry: %s", interval_id)
-        except Exception as err:
-            _LOGGER.error("Failed to create feeding interval entry: %s", err)
-
-        last_nursing_data: LastNursingData = {
+        breast_interval = {
             "mode": "breast",
             "start": feed_start_time,
-            "duration": total_duration,
+            "lastSide": last_side_value,
+            "lastUpdated": now_time,
             "leftDuration": left_duration,
             "rightDuration": right_duration,
-            "offset": self._get_timezone_offset_minutes(),
+            "offset": await self._get_timezone_offset_minutes(),
+            "end_offset": await self._get_timezone_offset_minutes(),
         }
 
-        last_side_data: LastSideData = {
-            "start": feed_start_time,
-            "lastSide": last_side_value,
-        }
+        try:
+            await feed_intervals_ref.set(breast_interval)
+            _LOGGER.info("Created nursing interval entry: %s", interval_id)
+        except GoogleAPICallError as err:
+            _LOGGER.error("Failed to create nursing interval entry: %s", err)
+
+        last_nursing_data = FirebaseLastNursingData(
+            mode="breast",
+            start=feed_start_time,
+            duration=total_duration,
+            leftDuration=left_duration,
+            rightDuration=right_duration,
+            offset=await self._get_timezone_offset_minutes(),
+        )
+
+        last_side_data = FirebaseLastSideData(
+            start=feed_start_time,
+            lastSide=last_side_value,
+        )
 
         # Update to inactive and save to lastNursing
-        feed_ref.update({
-            "timer.active": False,
-            "timer.paused": True,
-            "timer.timestamp": {"seconds": now_time},
-            "timer.local_timestamp": now_time,
-            "timer.lastSide": last_side_value,
-            "timer.leftDuration": DELETE_FIELD,  # Remove durations from timer
-            "timer.rightDuration": DELETE_FIELD,
-            "timer.activeSide": DELETE_FIELD,  # Remove activeSide
-            "prefs.lastNursing": last_nursing_data,
-            "prefs.lastSide": last_side_data,
-            "prefs.timestamp": {"seconds": now_time},
-            "prefs.local_timestamp": now_time,
-        })
+        await feed_ref.update(
+            {
+                "timer.active": False,
+                "timer.paused": True,
+                "timer.timestamp": {"seconds": now_time},
+                "timer.local_timestamp": now_time,
+                "timer.lastSide": last_side_value,
+                "timer.leftDuration": DELETE_FIELD,  # Remove durations from timer
+                "timer.rightDuration": DELETE_FIELD,
+                "timer.activeSide": DELETE_FIELD,  # Remove activeSide
+                "prefs.lastNursing": to_firebase_dict(last_nursing_data),
+                "prefs.lastSide": to_firebase_dict(last_side_data),
+                "prefs.timestamp": {"seconds": now_time},
+                "prefs.local_timestamp": now_time,
+            }
+        )
 
-        _LOGGER.info("Feeding completed (total duration %ss, L:%ss R:%ss)", total_duration, left_duration,
-                     right_duration)
+        _LOGGER.info(
+            "Nursing completed (total duration %ss, L:%ss R:%ss)", total_duration, left_duration, right_duration
+        )
 
-    def log_bottle_feeding(
+    async def log_bottle(
         self,
         child_uid: str,
         amount: float,
@@ -887,121 +920,236 @@ class HuckleberryAPI:
 
         Args:
             child_uid: Child unique identifier
-            bottle_type: Type of bottle contents ("Breast Milk", "Formula", or "Mixed")
+            bottle_type: Type of bottle contents ("Breast Milk", "Formula", "Cow Milk", etc.)
             amount: Amount fed in specified units
             units: Volume units ("ml" or "oz")
         """
-        _LOGGER.info(
-            "Logging bottle feeding for child %s: %s %s of %s",
-            child_uid, amount, units, bottle_type
-        )
+        _LOGGER.info("Logging bottle feeding for child %s: %s %s of %s", child_uid, amount, units, bottle_type)
 
-        client = self._get_firestore_client()
+        client = await self._get_firestore_client()
         feed_ref = client.collection("feed").document(child_uid)
 
         now_time = time.time()
         interval_id = f"{int(now_time * 1000)}-{uuid.uuid4().hex[:20]}"
 
         # Create interval document for bottle feeding
-        bottle_entry: FirebaseBottleInterval = {
-            "mode": "bottle",
-            "start": now_time,
-            "lastUpdated": now_time,
-            "bottleType": bottle_type,
-            "amount": amount,
-            "units": units,
-            "offset": self._get_timezone_offset_minutes(),
-            "end_offset": self._get_timezone_offset_minutes(),
-        }
+        bottle_entry = FirebaseBottleFeedIntervalData(
+            mode="bottle",
+            start=now_time,
+            lastUpdated=now_time,
+            bottleType=bottle_type,
+            amount=amount,
+            units=units,
+            offset=await self._get_timezone_offset_minutes(),
+            end_offset=await self._get_timezone_offset_minutes(),
+        )
 
         # Create interval document
         feed_intervals_ref = feed_ref.collection("intervals").document(interval_id)
 
         try:
-            feed_intervals_ref.set(cast(dict, bottle_entry))
+            await feed_intervals_ref.set(to_firebase_dict(bottle_entry))
             _LOGGER.info("Created bottle feeding interval entry: %s", interval_id)
-        except Exception as err:
+        except GoogleAPICallError as err:
             _LOGGER.error("Failed to create bottle feeding interval entry: %s", err)
             raise RuntimeError(f"Failed to log bottle feeding: {err}") from err
 
         # Update prefs.lastBottle and document-level bottle preferences
-        last_bottle_data: LastBottleData = {
-            "mode": "bottle",
-            "start": now_time,
-            "bottleType": bottle_type,
-            "bottleAmount": amount,
-            "bottleUnits": units,
-            "offset": self._get_timezone_offset_minutes(),
-        }
-
-        feed_ref.set({
-            "prefs": {
-                "lastBottle": last_bottle_data,
-                "bottleType": bottle_type,  # Update defaults
-                "bottleAmount": amount,
-                "bottleUnits": units,
-                "timestamp": {"seconds": now_time},
-                "local_timestamp": now_time,
-            }
-        }, merge=True)
-
-        _LOGGER.info(
-            "Bottle feeding logged: %s %s of %s",
-            amount, units, bottle_type
+        last_bottle_data = FirebaseLastBottleData(
+            mode="bottle",
+            start=now_time,
+            bottleType=bottle_type,
+            bottleAmount=amount,
+            bottleUnits=units,
+            offset=await self._get_timezone_offset_minutes(),
         )
 
-    def log_solids(
+        await feed_ref.set(
+            {
+                "prefs": {
+                    "lastBottle": to_firebase_dict(last_bottle_data),
+                    "bottleType": bottle_type,  # Update defaults
+                    "bottleAmount": amount,
+                    "bottleUnits": units,
+                    "timestamp": {"seconds": now_time},
+                    "local_timestamp": now_time,
+                }
+            },
+            merge=True,
+        )
+
+        _LOGGER.info("Bottle feeding logged: %s %s of %s", amount, units, bottle_type)
+
+    async def list_solids_curated_foods(self) -> list[FirebaseCuratedFoodDocument]:
+        """List curated solids foods from Firebase Storage."""
+        await self._ensure_authenticated()
+
+        if not self.id_token:
+            raise RuntimeError("Missing authentication token")
+
+        encoded_object = quote(CURATED_FOODS_OBJECT, safe="")
+        url = f"https://firebasestorage.googleapis.com/v0/b/{CURATED_FOODS_BUCKET}/o/{encoded_object}?alt=media"
+
+        async with self.websession.get(
+            url,
+            headers={"Authorization": f"Bearer {self.id_token}"},
+            timeout=aiohttp.ClientTimeout(total=30),
+        ) as response:
+            response.raise_for_status()
+            payload = await response.json()
+        if not isinstance(payload, dict):
+            raise RuntimeError("Unexpected curated foods payload shape")
+
+        foods: list[FirebaseCuratedFoodDocument] = []
+        for food_data in payload.values():
+            if not isinstance(food_data, dict):
+                continue
+
+            entry = dict(food_data)
+            foods.append(FirebaseCuratedFoodDocument.model_validate(entry))
+
+        return sorted(
+            foods,
+            key=lambda item: (
+                float(item.rank) if item.rank is not None else float("inf"),
+                item.name.lower(),
+            ),
+        )
+
+    async def list_solids_custom_foods(
+        self, child_uid: str, include_archived: bool = False
+    ) -> list[FirebaseCustomFoodTypeDocument]:
+        """List custom solids foods from Firestore ``types/{child_uid}/custom``."""
+        client = await self._get_firestore_client()
+        custom_ref = client.collection("types").document(child_uid).collection("custom")
+
+        foods: list[FirebaseCustomFoodTypeDocument] = []
+        async for doc in custom_ref.where("type", "==", "solids").stream():
+            raw_data = doc.to_dict() or {}
+            item = FirebaseCustomFoodTypeDocument.model_validate(raw_data)
+            if not include_archived and item.archived:
+                continue
+            foods.append(item)
+
+        return sorted(foods, key=lambda item: item.updated_at, reverse=True)
+
+    async def create_solids_custom_food(
+        self, child_uid: str, name: str, image: str = ""
+    ) -> FirebaseCustomFoodTypeDocument:
+        """Create a custom solids food in types/{child_uid}/custom."""
+        food_name = name.strip()
+        if not food_name:
+            raise ValueError("Custom food name must be non-empty")
+
+        now_iso = datetime.now(dt_timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        food_id = str(uuid.uuid4())
+
+        custom_food = FirebaseCustomFoodTypeDocument(
+            created_at=now_iso,
+            updated_at=now_iso,
+            name=food_name,
+            archived=False,
+            id=food_id,
+            type="solids",
+            image=image,
+            source="custom",
+        )
+
+        client = await self._get_firestore_client()
+        types_ref = client.collection("types").document(child_uid)
+        await types_ref.set({"available_types": {"solids": True}}, merge=True)
+        await types_ref.collection("custom").document(food_id).set(to_firebase_dict(custom_food))
+
+        return custom_food
+
+    async def log_solids(
         self,
         child_uid: str,
-        foods: list[str],
+        foods: list[SolidsFoodReference],
         notes: str = "",
         reaction: SolidsReaction | None = None,
+        food_note_image: str | None = None,
     ) -> None:
         """Log solid food feeding.
 
         Args:
             child_uid: Child unique identifier
-            foods: List of food names (e.g., ["broccoli", "rice"])
+            foods: Existing food references with explicit id/source/name/amount
             notes: Optional notes about the meal
             reaction: Optional reaction - "LOVED", "MEH", "HATED", or "ALLERGIC"
+            food_note_image: Optional Firebase Storage image filename
         """
-        _LOGGER.info("Logging solids for child %s: %s", child_uid, foods)
+        if not foods:
+            raise ValueError("At least one food is required")
 
-        client = self._get_firestore_client()
+        _LOGGER.info("Logging solids for child %s with %d foods", child_uid, len(foods))
+
+        client = await self._get_firestore_client()
         feed_ref = client.collection("feed").document(child_uid)
 
         now_time = time.time()
-        interval_id = str(uuid.uuid4())
+        interval_id = f"{int(now_time * 1000)}-{uuid.uuid4().hex[:20]}"
 
-        # Build foods dict: {uuid: {"id": uuid, "source": "custom", "created_name": name}}
-        foods_dict: dict[str, dict] = {}
-        for food_name in foods:
-            food_id = str(uuid.uuid4())
-            foods_dict[food_id] = {
-                "id": food_id,
-                "source": "custom",
-                "created_name": food_name,
-            }
+        foods_dict: dict[str, SolidsFoodEntry] = {}
+        for food_item in foods:
+            food_ref = (
+                food_item
+                if isinstance(food_item, SolidsFoodReference)
+                else SolidsFoodReference.model_validate(food_item)
+            )
 
-        entry: FirebaseSolidsInterval = {
-            "mode": "solids",
-            "start": now_time,
-            "lastUpdated": now_time,
-            "offset": self._get_timezone_offset_minutes(),
-            "foods": foods_dict,
-        }
+            food_name = food_ref.name.strip()
+            if not food_name:
+                raise ValueError("Food name must be non-empty")
+
+            foods_dict[food_ref.id] = SolidsFoodEntry(
+                id=food_ref.id,
+                source=food_ref.source,
+                created_name=food_name,
+                amount=food_ref.amount,
+            )
+
+        entry = FirebaseSolidsFeedIntervalData(
+            mode="solids",
+            start=now_time,
+            lastUpdated=now_time,
+            offset=await self._get_timezone_offset_minutes(),
+            foods=foods_dict,
+        )
 
         if notes:
-            entry["notes"] = notes
+            entry.notes = notes
         if reaction:
-            entry["reactions"] = {reaction: True}
+            entry.reactions = {reaction: True}
+        if food_note_image:
+            entry.foodNoteImage = food_note_image
 
-        feed_ref.collection("intervals").document(interval_id).set(cast(dict, entry))
+        await feed_ref.collection("intervals").document(interval_id).set(to_firebase_dict(entry))
 
-        _LOGGER.info("Solids logged: %s", ", ".join(foods))
+        last_solid = FirebaseLastSolidData(
+            mode="solids",
+            start=now_time,
+            foods=foods_dict,
+            reactions={reaction: True} if reaction else None,
+            notes=notes if notes else None,
+            offset=await self._get_timezone_offset_minutes(),
+        )
 
-    def _setup_listener(
-        self, collection_name: CollectionName, child_uid: str, callback: Callable[[TDocumentData], None]
+        await feed_ref.update(
+            {
+                "prefs.lastSolid": to_firebase_dict(last_solid),
+                "prefs.timestamp": {"seconds": now_time},
+                "prefs.local_timestamp": now_time,
+            }
+        )
+
+        _LOGGER.info("Solids logged with %d references", len(foods_dict))
+
+    async def _setup_listener(
+        self,
+        collection_name: Literal["sleep", "feed", "health", "diaper"],
+        child_uid: str,
+        callback: Callable[[TDocumentData], None],
     ) -> None:
         """Set up real-time listener for a Firestore document.
 
@@ -1014,16 +1162,33 @@ class HuckleberryAPI:
         """
         _LOGGER.info("Setting up real-time listener for %s/%s", collection_name, child_uid)
 
-        client = self._get_firestore_client()
-        doc_ref = client.collection(collection_name).document(child_uid)
+        await self._ensure_authenticated()
+        if not self._listener_client:
+            assert self.id_token is not None, "id_token should be set after authentication"
+            credentials = FirebaseTokenCredentials(self.id_token)
+            self._listener_client = firestore.Client(
+                project="simpleintervals",
+                credentials=credentials,
+            )
+
+        doc_ref = self._listener_client.collection(collection_name).document(child_uid)
 
         # Create snapshot listener
-        def on_snapshot(doc_snapshot, changes, read_time):
+        def on_snapshot(doc_snapshot, _changes, _read_time):
             """Handle snapshot updates."""
             for doc in doc_snapshot:
                 if doc.exists:
                     _LOGGER.debug("Real-time %s update received for child %s", collection_name, child_uid)
-                    callback(doc.to_dict())
+                    payload = doc.to_dict() or {}
+                    if collection_name == "sleep":
+                        validated = FirebaseSleepDocumentData.model_validate(payload)
+                    elif collection_name == "feed":
+                        validated = FirebaseFeedDocumentData.model_validate(payload)
+                    elif collection_name == "health":
+                        validated = FirebaseHealthDocumentData.model_validate(payload)
+                    else:
+                        validated = FirebaseDiaperDocumentData.model_validate(payload)
+                    callback(cast(TDocumentData, validated))
 
         # Start listening and store the unsubscribe function
         unsubscribe = doc_ref.on_snapshot(on_snapshot)
@@ -1034,31 +1199,27 @@ class HuckleberryAPI:
 
         _LOGGER.info("Real-time %s listener active for child %s", collection_name, child_uid)
 
-    def setup_realtime_listener(
-        self, child_uid: str, callback: Callable[[SleepDocumentData], None]
-    ) -> None:
+    async def setup_sleep_listener(self, child_uid: str, callback: Callable[[FirebaseSleepDocumentData], None]) -> None:
         """Set up real-time listener for sleep document changes."""
-        self._setup_listener("sleep", child_uid, callback)
+        await self._setup_listener("sleep", child_uid, callback)
 
-    def setup_feed_listener(
-        self, child_uid: str, callback: Callable[[FeedDocumentData], None]
-    ) -> None:
+    async def setup_feed_listener(self, child_uid: str, callback: Callable[[FirebaseFeedDocumentData], None]) -> None:
         """Set up real-time listener for feed document changes."""
-        self._setup_listener("feed", child_uid, callback)
+        await self._setup_listener("feed", child_uid, callback)
 
-    def setup_health_listener(
-        self, child_uid: str, callback: Callable[[HealthDocumentData], None]
+    async def setup_health_listener(
+        self, child_uid: str, callback: Callable[[FirebaseHealthDocumentData], None]
     ) -> None:
         """Set up real-time listener for health document changes."""
-        self._setup_listener("health", child_uid, callback)
+        await self._setup_listener("health", child_uid, callback)
 
-    def setup_diaper_listener(
-        self, child_uid: str, callback: Callable[[DiaperDocumentData], None]
+    async def setup_diaper_listener(
+        self, child_uid: str, callback: Callable[[FirebaseDiaperDocumentData], None]
     ) -> None:
         """Set up real-time listener for diaper document changes."""
-        self._setup_listener("diaper", child_uid, callback)
+        await self._setup_listener("diaper", child_uid, callback)
 
-    def stop_all_listeners(self) -> None:
+    async def stop_all_listeners(self) -> None:
         """Stop all active real-time listeners."""
         _LOGGER.info("Stopping all real-time listeners")
         for key, watch in self._listeners.items():
@@ -1070,15 +1231,123 @@ class HuckleberryAPI:
                 else:
                     _LOGGER.debug("Listener %s object has no unsubscribe/close", key)
                 _LOGGER.debug("Stopped listener: %s", key)
-            except Exception as err:
+            except (AttributeError, RuntimeError, TypeError, ValueError) as err:
                 _LOGGER.error("Error stopping listener %s: %s", key, err)
         self._listeners.clear()
         self._listener_callbacks.clear()
+        self._listener_client = None
 
-    def log_diaper(self, child_uid: str, mode: DiaperMode,
-                   pee_amount: DiaperAmount | None = None, poo_amount: DiaperAmount | None = None,
-                   color: PooColor | None = None, consistency: PooConsistency | None = None,
-                   diaper_rash: bool = False, notes: str | None = None) -> None:
+    async def _log_diaper_or_potty_event(
+        self,
+        child_uid: str,
+        mode: DiaperMode,
+        *,
+        pref_field: Literal["lastDiaper", "lastPotty"],
+        pee_amount: Literal["little", "medium", "big"] | None = None,
+        poo_amount: Literal["little", "medium", "big"] | None = None,
+        color: PooColor | None = None,
+        consistency: PooConsistency | None = None,
+        diaper_rash: bool = False,
+        notes: str | None = None,
+        is_potty: bool = False,
+        how_it_happened: PottyResult | None = None,
+    ) -> None:
+        """Write a diaper-collection diaper or potty event and update the matching prefs summary."""
+        event_kind = "potty" if is_potty else "diaper"
+        _LOGGER.info("Logging %s event for child %s: mode=%s", event_kind, child_uid, mode)
+
+        client = await self._get_firestore_client()
+        diaper_ref = client.collection("diaper").document(child_uid)
+
+        current_time = time.time()
+        current_offset = await self._get_timezone_offset_minutes()
+
+        # Create interval ID (timestamp in ms + random suffix)
+        interval_timestamp_ms = int(current_time * 1000)
+        interval_id = f"{interval_timestamp_ms}-{uuid.uuid4().hex[:20]}"
+
+        # Build interval data (matching app behavior - minimal fields by default)
+        interval_data = FirebaseDiaperData(
+            start=current_time,
+            lastUpdated=current_time,
+            mode=mode,
+            offset=current_offset,
+        )
+
+        # Add quantity field if amounts are specified
+        # App uses: 0.0 = "little", 50.0 = "medium", 100.0 = "big"
+        # Other values are treated as no quantity indicator
+        amount_map = {"little": 0.0, "medium": 50.0, "big": 100.0}
+        quantity: dict[str, float] = {}
+        if pee_amount and pee_amount in amount_map:
+            quantity["pee"] = amount_map[pee_amount]
+        if poo_amount and poo_amount in amount_map:
+            quantity["poo"] = amount_map[poo_amount]
+        if quantity:
+            interval_data.quantity = FirebaseDiaperQuantity(**quantity)
+
+        # Add optional fields if provided
+        if color:
+            interval_data.color = color
+        if consistency:
+            interval_data.consistency = consistency
+        if diaper_rash:
+            interval_data.diaperRash = True
+        if notes:
+            interval_data.notes = notes
+        if is_potty:
+            interval_data.isPotty = True
+        if how_it_happened:
+            interval_data.howItHappened = how_it_happened
+
+        # Create interval document in subcollection
+        try:
+            await diaper_ref.collection("intervals").document(interval_id).set(to_firebase_dict(interval_data))
+            _LOGGER.info("Created %s interval: %s", event_kind, interval_id)
+        except GoogleAPICallError as err:
+            _LOGGER.error("Failed to create %s interval: %s", event_kind, err)
+            raise
+
+        prefs_entry: FirebaseLastDiaperData | FirebaseLastPottyData
+        if pref_field == "lastDiaper":
+            prefs_entry = FirebaseLastDiaperData(
+                start=current_time,
+                mode=mode,
+                offset=current_offset,
+            )
+        else:
+            prefs_entry = FirebaseLastPottyData(
+                start=current_time,
+                mode=mode,
+                offset=current_offset,
+            )
+
+        try:
+            await diaper_ref.update(
+                {
+                    f"prefs.{pref_field}": to_firebase_dict(prefs_entry),
+                    "prefs.timestamp": {"seconds": current_time},
+                    "prefs.local_timestamp": current_time,
+                }
+            )
+            _LOGGER.info("Updated %s prefs", pref_field)
+        except GoogleAPICallError as err:
+            _LOGGER.error("Failed to update %s prefs: %s", pref_field, err)
+            raise
+
+        _LOGGER.info("%s event logged successfully", event_kind.capitalize())
+
+    async def log_diaper(
+        self,
+        child_uid: str,
+        mode: DiaperMode,
+        pee_amount: Literal["little", "medium", "big"] | None = None,
+        poo_amount: Literal["little", "medium", "big"] | None = None,
+        color: PooColor | None = None,
+        consistency: PooConsistency | None = None,
+        diaper_rash: bool = False,
+        notes: str | None = None,
+    ) -> None:
         """
         Log a diaper change.
 
@@ -1092,76 +1361,62 @@ class HuckleberryAPI:
             diaper_rash: Whether baby has diaper rash
             notes: Optional notes about this diaper change
         """
-        _LOGGER.info("Logging diaper change for child %s: mode=%s", child_uid, mode)
+        await self._log_diaper_or_potty_event(
+            child_uid,
+            mode,
+            pref_field="lastDiaper",
+            pee_amount=pee_amount,
+            poo_amount=poo_amount,
+            color=color,
+            consistency=consistency,
+            diaper_rash=diaper_rash,
+            notes=notes,
+        )
 
-        client = self._get_firestore_client()
-        diaper_ref = client.collection("diaper").document(child_uid)
+    async def log_potty(
+        self,
+        child_uid: str,
+        mode: DiaperMode,
+        how_it_happened: PottyResult,
+        pee_amount: Literal["little", "medium", "big"] | None = None,
+        poo_amount: Literal["little", "medium", "big"] | None = None,
+        color: PooColor | None = None,
+        consistency: PooConsistency | None = None,
+        notes: str | None = None,
+    ) -> None:
+        """Log a potty event in the shared diaper tracker.
 
-        current_time = time.time()
+        Args:
+            child_uid: Child unique identifier
+            mode: One of 'pee', 'poo', 'both', 'dry'
+            how_it_happened: One of 'satButDry', 'wentPotty', or 'accident'
+            pee_amount: Pee amount - 'little', 'medium', 'big', or None (no quantity)
+            poo_amount: Poo amount - 'little', 'medium', 'big', or None (no quantity)
+            color: Poo color - 'yellow', 'brown', 'black', 'green', 'red', 'gray'
+            consistency: Poo consistency - 'solid', 'loose', 'runny', 'mucousy', 'hard', 'pebbles', 'diarrhea'
+            notes: Optional notes about this potty event
+        """
+        await self._log_diaper_or_potty_event(
+            child_uid,
+            mode,
+            pref_field="lastPotty",
+            pee_amount=pee_amount,
+            poo_amount=poo_amount,
+            color=color,
+            consistency=consistency,
+            notes=notes,
+            is_potty=True,
+            how_it_happened=how_it_happened,
+        )
 
-        # Create interval ID (timestamp in ms + random suffix)
-        interval_timestamp_ms = int(current_time * 1000)
-        interval_id = f"{interval_timestamp_ms}-{uuid.uuid4().hex[:20]}"
-
-        # Build interval data (matching app behavior - minimal fields by default)
-        interval_data: FirebaseDiaperInterval = {
-            "start": current_time,
-            "lastUpdated": current_time,
-            "mode": mode,
-            "offset": self._get_timezone_offset_minutes(),
-        }
-
-        # Add quantity field if amounts are specified
-        # App uses: 0.0 = "little", 50.0 = "medium", 100.0 = "big"
-        # Other values are treated as no quantity indicator
-        amount_map = {"little": 0.0, "medium": 50.0, "big": 100.0}
-        quantity = {}
-        if pee_amount and pee_amount in amount_map:
-            quantity["pee"] = amount_map[pee_amount]
-        if poo_amount and poo_amount in amount_map:
-            quantity["poo"] = amount_map[poo_amount]
-        if quantity:
-            interval_data["quantity"] = quantity
-
-        # Add optional fields if provided
-        if color:
-            interval_data["color"] = color
-        if consistency:
-            interval_data["consistency"] = consistency
-        if diaper_rash:
-            interval_data["diaperRash"] = True  # type: ignore # Not in TypedDict yet
-        if notes:
-            interval_data["notes"] = notes  # type: ignore # Not in TypedDict yet
-
-        # Create interval document in subcollection
-        try:
-            diaper_ref.collection("intervals").document(interval_id).set(cast(dict, interval_data))
-            _LOGGER.info("Created diaper interval: %s", interval_id)
-        except Exception as err:
-            _LOGGER.error("Failed to create diaper interval: %s", err)
-            raise
-
-        # Update prefs.lastDiaper
-        try:
-            last_diaper_data: LastDiaperData = {
-                "start": current_time,
-                "mode": mode,
-                "offset": self._get_timezone_offset_minutes(),
-            }
-            diaper_ref.update({
-                "prefs.lastDiaper": last_diaper_data,
-                "prefs.timestamp": {"seconds": current_time},
-                "prefs.local_timestamp": current_time,
-            })
-            _LOGGER.info("Updated lastDiaper prefs")
-        except Exception as err:
-            _LOGGER.error("Failed to update diaper prefs: %s", err)
-            raise
-
-        _LOGGER.info("Diaper change logged successfully")
-
-    def log_growth(self, child_uid: str, weight: float | None = None, height: float | None = None,
-                   head: float | None = None, units: MeasurementUnits = "metric") -> None:
+    async def log_growth(
+        self,
+        child_uid: str,
+        weight: float | None = None,
+        height: float | None = None,
+        head: float | None = None,
+        units: Literal["metric", "imperial"] = "metric",
+    ) -> None:
         """
         Log growth measurements (weight, height, head circumference).
 
@@ -1177,7 +1432,7 @@ class HuckleberryAPI:
         if not any([weight, height, head]):
             raise ValueError("At least one measurement (weight, height, or head) is required")
 
-        client = self._get_firestore_client()
+        client = await self._get_firestore_client()
         health_ref = client.collection("health").document(child_uid)
 
         current_time = time.time()
@@ -1187,63 +1442,64 @@ class HuckleberryAPI:
         interval_id = f"{interval_timestamp_ms}-{uuid.uuid4().hex[:20]}"
 
         # Build growth entry matching Huckleberry app structure
-        growth_entry: FirebaseGrowthData = {
-            "_id": interval_id,  # type: ignore # _id is not in TypedDict but Firestore accepts it
-            "type": "health",
-            "mode": "growth",
-            "start": current_time,
-            "lastUpdated": current_time,
-            "offset": self._get_timezone_offset_minutes(),
-            "isNight": False,
-            "multientry_key": None,
-        }
+        growth_entry = FirebaseGrowthData(
+            type="health",
+            mode="growth",
+            start=current_time,
+            lastUpdated=current_time,
+            offset=await self._get_timezone_offset_minutes(),
+            isNight=False,
+            multientry_key=None,
+        )
 
         # Add measurements with proper unit fields (matches app structure)
         if units == "metric":
             if weight is not None:
-                growth_entry["weight"] = float(weight)
-                growth_entry["weightUnits"] = "kg"
+                growth_entry.weight = float(weight)
+                growth_entry.weightUnits = "kg"
             if height is not None:
-                growth_entry["height"] = float(height)
-                growth_entry["heightUnits"] = "cm"
+                growth_entry.height = float(height)
+                growth_entry.heightUnits = "cm"
             if head is not None:
-                growth_entry["head"] = float(head)
-                growth_entry["headUnits"] = "hcm"  # App uses "hcm" for head circumference
+                growth_entry.head = float(head)
+                growth_entry.headUnits = "hcm"
         else:  # imperial
             if weight is not None:
-                growth_entry["weight"] = float(weight)
-                growth_entry["weightUnits"] = "lbs"
+                growth_entry.weight = float(weight)
+                growth_entry.weightUnits = "lbs"
             if height is not None:
-                growth_entry["height"] = float(height)
-                growth_entry["heightUnits"] = "in"
+                growth_entry.height = float(height)
+                growth_entry.heightUnits = "in"
             if head is not None:
-                growth_entry["head"] = float(head)
-                growth_entry["headUnits"] = "hin"  # Head in inches
+                growth_entry.head = float(head)
+                growth_entry.headUnits = "hin"
 
         # Create interval document in health/{child_uid}/data subcollection
         # (Health uses "data" subcollection, not "intervals" like other trackers)
         health_data_ref = health_ref.collection("data").document(interval_id)
 
         try:
-            health_data_ref.set(cast(dict, growth_entry))
+            await health_data_ref.set(to_firebase_dict(growth_entry))
             _LOGGER.info("Created growth data entry in subcollection: %s", interval_id)
-        except Exception as err:
+        except GoogleAPICallError as err:
             _LOGGER.error("Failed to create growth data entry: %s", err)
             # Continue to update prefs even if subcollection write fails
 
         # Update prefs.lastGrowthEntry and timestamps (matches Huckleberry app structure)
         try:
-            health_ref.update({
-                "prefs.lastGrowthEntry": growth_entry,
-                "prefs.timestamp": {"seconds": current_time},
-                "prefs.local_timestamp": current_time,
-            })
+            await health_ref.update(
+                {
+                    "prefs.lastGrowthEntry": to_firebase_dict(growth_entry),
+                    "prefs.timestamp": {"seconds": current_time},
+                    "prefs.local_timestamp": current_time,
+                }
+            )
             _LOGGER.info("Growth data logged successfully")
-        except Exception as err:
+        except GoogleAPICallError as err:
             _LOGGER.error("Failed to log growth data: %s", err)
             raise
 
-    def get_growth_data(self, child_uid: str) -> GrowthData:
+    async def get_latest_growth(self, child_uid: str) -> FirebaseGrowthData | None:
         """
         Get the latest growth measurements for a child.
 
@@ -1251,86 +1507,37 @@ class HuckleberryAPI:
             child_uid: Child unique identifier
 
         Returns:
-            GrowthData containing latest growth measurements
+            Latest Firebase growth entry, if present
         """
-        client = self._get_firestore_client()
+        client = await self._get_firestore_client()
         health_ref = client.collection("health").document(child_uid)
 
         try:
-            doc = health_ref.get()
+            doc = await health_ref.get()
             if not doc.exists:
-                return {
-                    "weight_units": "kg",
-                    "height_units": "cm",
-                    "head_units": "hcm",
-                }
+                return None
 
             health_data = doc.to_dict()
             if not health_data:
-                return {
-                    "weight_units": "kg",
-                    "height_units": "cm",
-                    "head_units": "hcm",
-                }
+                return None
 
-            last_growth = health_data.get("prefs", {}).get("lastGrowthEntry", {})
+            health_model = FirebaseHealthDocumentData.model_validate(health_data)
+            last_growth = health_model.prefs.lastGrowthEntry if health_model.prefs else None
 
             if not last_growth:
-                return {
-                    "weight_units": "kg",
-                    "height_units": "cm",
-                    "head_units": "hcm",
-                }
+                return None
 
-            result: GrowthData = {
-                "weight": last_growth.get("weight"),
-                "height": last_growth.get("height"),
-                "head": last_growth.get("head"),
-                "weight_units": last_growth.get("weightUnits", "kg"),
-                "height_units": last_growth.get("heightUnits", "cm"),
-                "head_units": last_growth.get("headUnits", "hcm"),
-                "timestamp_sec": last_growth.get("start"),
-            }
-            return result
-        except Exception as err:
+            return FirebaseGrowthData.model_validate(last_growth.model_dump(by_alias=True, exclude_none=True))
+        except (GoogleAPICallError, ValidationError, RuntimeError, TypeError, ValueError) as err:
             _LOGGER.error("Failed to get growth data: %s", err)
-            return {
-                "weight_units": "kg",
-                "height_units": "cm",
-                "head_units": "hcm",
-            }
+            return None
 
-    def get_calendar_events(
+    async def list_sleep_intervals(
         self,
         child_uid: str,
         start_timestamp: int,
         end_timestamp: int,
-    ) -> dict[str, list[dict]]:
-        """
-        Fetch all calendar events (sleep, feed, diaper, health) for a date range.
-
-        Args:
-            child_uid: Child unique identifier
-            start_timestamp: Start of range (Unix timestamp in seconds)
-            end_timestamp: End of range (Unix timestamp in seconds)
-
-        Returns:
-            Dictionary with event type keys and lists of event dicts
-        """
-        return {
-            "sleep": self.get_sleep_intervals(child_uid, start_timestamp, end_timestamp),
-            "feed": self.get_feed_intervals(child_uid, start_timestamp, end_timestamp),
-            "solids": self.get_solids_intervals(child_uid, start_timestamp, end_timestamp),
-            "diaper": self.get_diaper_intervals(child_uid, start_timestamp, end_timestamp),
-            "health": self.get_health_entries(child_uid, start_timestamp, end_timestamp),
-        }
-
-    def get_sleep_intervals(
-        self,
-        child_uid: str,
-        start_timestamp: int,
-        end_timestamp: int,
-    ) -> list[dict]:
+    ) -> list[FirebaseSleepIntervalData]:
         """
         Fetch sleep intervals from Firestore for a date range.
 
@@ -1340,66 +1547,59 @@ class HuckleberryAPI:
             end_timestamp: End of range (Unix timestamp in seconds)
 
         Returns:
-            List of sleep interval dicts with 'start' and 'duration' fields
+            List of Firebase-validated sleep interval entries
         """
-        events = []
-        client = self._get_firestore_client()
+        events: list[FirebaseSleepIntervalData] = []
+        client = await self._get_firestore_client()
         sleep_ref = client.collection("sleep").document(child_uid)
         intervals_ref = sleep_ref.collection("intervals")
 
         try:
             # Query 1: Get regular documents with date filtering
-            regular_docs = intervals_ref.where(
-                filter=firestore.FieldFilter("start", ">=", start_timestamp)
-            ).where(
-                filter=firestore.FieldFilter("start", "<", end_timestamp)
-            ).order_by("start").stream()
+            regular_docs = (
+                intervals_ref.where(filter=firestore.FieldFilter("start", ">=", start_timestamp))
+                .where(filter=firestore.FieldFilter("start", "<", end_timestamp))
+                .order_by("start")
+                .stream()
+            )
 
-            for doc in regular_docs:
+            async for doc in regular_docs:
                 data = doc.to_dict()
                 if not data or data.get("multi"):
                     continue  # Skip multi-entry docs from this query
 
-                events.append({
-                    "start": data["start"],
-                    "duration": data.get("duration", 0),
-                })
+                interval = FirebaseSleepIntervalData.model_validate(data)
+                events.append(interval)
 
             # Query 2: Get multi-entry documents (can't filter by nested start field)
-            multi_docs = intervals_ref.where(
-                filter=firestore.FieldFilter("multi", "==", True)
-            ).stream()
+            multi_docs = intervals_ref.where(filter=firestore.FieldFilter("multi", "==", True)).stream()
 
-            for doc in multi_docs:
+            async for doc in multi_docs:
                 data = doc.to_dict()
-                if not data or not isinstance(data.get("data"), dict):
+                if not data:
                     continue
 
-                # Iterate through batched entries and filter by date
-                for entry_id, entry in data["data"].items():
-                    if not isinstance(entry, dict) or "start" not in entry:
-                        continue
+                container = FirebaseSleepMultiContainer.model_validate(data)
 
-                    entry_start = entry["start"]
+                # Iterate through batched entries and filter by date
+                for entry in container.data.values():
+                    entry_start = entry.start
                     if not (start_timestamp <= entry_start < end_timestamp):
                         continue
 
-                    events.append({
-                        "start": entry_start,
-                        "duration": entry.get("duration", 0),
-                    })
+                    events.append(entry)
 
-        except Exception as err:
+        except (GoogleAPICallError, ValidationError) as err:
             _LOGGER.error("Error fetching sleep intervals: %s", err)
 
         return events
 
-    def get_feed_intervals(
+    async def list_feed_intervals(
         self,
         child_uid: str,
         start_timestamp: int,
         end_timestamp: int,
-    ) -> list[dict]:
+    ) -> list[FirebaseFeedIntervalData]:
         """
         Fetch feeding intervals from Firestore for a date range.
 
@@ -1409,175 +1609,67 @@ class HuckleberryAPI:
             end_timestamp: End of range (Unix timestamp in seconds)
 
         Returns:
-            List of feed interval dicts with 'start', 'leftDuration', 'rightDuration' fields
+            List of Firebase-validated feed interval entries
         """
-        events = []
-        client = self._get_firestore_client()
+        events: list[FirebaseFeedIntervalData] = []
+        client = await self._get_firestore_client()
         feed_ref = client.collection("feed").document(child_uid)
         intervals_ref = feed_ref.collection("intervals")
 
         try:
             # Query 1: Get regular documents with date filtering
-            regular_docs = intervals_ref.where(
-                filter=firestore.FieldFilter("start", ">=", start_timestamp)
-            ).where(
-                filter=firestore.FieldFilter("start", "<", end_timestamp)
-            ).order_by("start").stream()
+            regular_docs = (
+                intervals_ref.where(filter=firestore.FieldFilter("start", ">=", start_timestamp))
+                .where(filter=firestore.FieldFilter("start", "<", end_timestamp))
+                .order_by("start")
+                .stream()
+            )
 
-            for doc in regular_docs:
+            async for doc in regular_docs:
                 data = doc.to_dict()
                 if not data or data.get("multi"):
                     continue  # Skip multi-entry docs from this query
 
-                # Regular doc: durations are in minutes
-                event = {
-                    "start": data["start"],
-                    "leftDuration": data.get("leftDuration", 0),
-                    "rightDuration": data.get("rightDuration", 0),
-                    "is_multi_entry": False,
-                }
-
-                # Preserve mode-specific fields for consumers (e.g., calendar)
-                if "mode" in data:
-                    event["mode"] = data.get("mode")
-                if "type" in data:
-                    event["type"] = data.get("type")
-                if "bottleType" in data:
-                    event["bottleType"] = data.get("bottleType")
-                if "amount" in data:
-                    event["amount"] = data.get("amount")
-                if "units" in data:
-                    event["units"] = data.get("units")
-                if "bottleAmount" in data:
-                    event["bottleAmount"] = data.get("bottleAmount")
-                if "bottleUnits" in data:
-                    event["bottleUnits"] = data.get("bottleUnits")
-
-                events.append(event)
-
-            # Query 2: Get multi-entry documents (can't filter by nested start field)
-            multi_docs = intervals_ref.where(
-                filter=firestore.FieldFilter("multi", "==", True)
-            ).stream()
-
-            for doc in multi_docs:
-                data = doc.to_dict()
-                if not data or not isinstance(data.get("data"), dict):
+                interval = _FEED_INTERVAL_ADAPTER.validate_python(data)
+                feed_mode = getattr(interval, "mode", None)
+                if feed_mode is None:
                     continue
 
-                # Iterate through batched entries and filter by date
-                for entry_id, entry in data["data"].items():
-                    if not isinstance(entry, dict) or "start" not in entry:
-                        continue
+                events.append(interval)
 
-                    entry_start = entry["start"]
+            # Query 2: Get multi-entry documents (can't filter by nested start field)
+            multi_docs = intervals_ref.where(filter=firestore.FieldFilter("multi", "==", True)).stream()
+
+            async for doc in multi_docs:
+                data = doc.to_dict()
+                if not data:
+                    continue
+
+                container = FirebaseFeedMultiContainer.model_validate(data)
+
+                # Iterate through batched entries and filter by date
+                for entry in container.data.values():
+                    entry_start = entry.start
                     if not (start_timestamp <= entry_start < end_timestamp):
                         continue
 
-                    # Multi-entry: durations are in SECONDS
-                    event = {
-                        "start": entry_start,
-                        "leftDuration": entry.get("leftDuration", 0),
-                        "rightDuration": entry.get("rightDuration", 0),
-                        "is_multi_entry": True,
-                    }
+                    feed_mode = getattr(entry, "mode", None)
+                    if feed_mode is None:
+                        continue
 
-                    # Preserve mode-specific fields for consumers (e.g., calendar)
-                    if "mode" in entry:
-                        event["mode"] = entry.get("mode")
-                    if "type" in entry:
-                        event["type"] = entry.get("type")
-                    if "bottleType" in entry:
-                        event["bottleType"] = entry.get("bottleType")
-                    if "amount" in entry:
-                        event["amount"] = entry.get("amount")
-                    if "units" in entry:
-                        event["units"] = entry.get("units")
-                    if "bottleAmount" in entry:
-                        event["bottleAmount"] = entry.get("bottleAmount")
-                    if "bottleUnits" in entry:
-                        event["bottleUnits"] = entry.get("bottleUnits")
+                    events.append(entry)
 
-                    events.append(event)
-
-        except Exception as err:
+        except (GoogleAPICallError, ValidationError) as err:
             _LOGGER.error("Error fetching feed intervals: %s", err)
 
         return events
 
-    def get_solids_intervals(
+    async def list_diaper_intervals(
         self,
         child_uid: str,
         start_timestamp: int,
         end_timestamp: int,
-    ) -> list[dict]:
-        """Fetch solids feeding intervals from Firestore for a date range.
-
-        Args:
-            child_uid: Child unique identifier
-            start_timestamp: Start of range (Unix timestamp in seconds)
-            end_timestamp: End of range (Unix timestamp in seconds)
-
-        Returns:
-            List of solids interval dicts with 'start', 'foods', and optional fields
-        """
-        events: list[dict] = []
-        client = self._get_firestore_client()
-        feed_ref = client.collection("feed").document(child_uid)
-        intervals_ref = feed_ref.collection("intervals")
-
-        try:
-            # Query 1: Regular docs with date filtering
-            regular_docs = intervals_ref.where(
-                filter=firestore.FieldFilter("start", ">=", start_timestamp)
-            ).where(
-                filter=firestore.FieldFilter("start", "<", end_timestamp)
-            ).order_by("start").stream()
-
-            for doc in regular_docs:
-                data = doc.to_dict()
-                if not data or data.get("multi"):
-                    continue
-                if data.get("mode") != "solids":
-                    continue
-                data["_id"] = doc.id
-                events.append(data)
-
-            # Query 2: Multi-entry documents
-            multi_docs = intervals_ref.where(
-                filter=firestore.FieldFilter("multi", "==", True)
-            ).stream()
-
-            for doc in multi_docs:
-                data = doc.to_dict()
-                if not data or not isinstance(data.get("data"), dict):
-                    continue
-                for entry_id, entry in data["data"].items():
-                    if not isinstance(entry, dict):
-                        continue
-                    if entry.get("mode") != "solids":
-                        continue
-                    start = entry.get("start")
-                    if not isinstance(start, (int, float)):
-                        continue
-                    if not (start_timestamp <= start < end_timestamp):
-                        continue
-                    row = dict(entry)
-                    row["_id"] = entry_id
-                    row["multi"] = True
-                    events.append(row)
-
-        except Exception as err:
-            _LOGGER.error("Error fetching solids intervals: %s", err)
-
-        return events
-
-    def get_diaper_intervals(
-        self,
-        child_uid: str,
-        start_timestamp: int,
-        end_timestamp: int,
-    ) -> list[dict]:
+    ) -> list[FirebaseDiaperData]:
         """
         Fetch diaper intervals from Firestore for a date range.
 
@@ -1587,84 +1679,61 @@ class HuckleberryAPI:
             end_timestamp: End of range (Unix timestamp in seconds)
 
         Returns:
-            List of diaper interval dicts with 'start', 'mode', and optional details
+            List of Firebase-validated diaper interval entries
         """
-        events = []
-        client = self._get_firestore_client()
+        events: list[FirebaseDiaperData] = []
+        client = await self._get_firestore_client()
         diaper_ref = client.collection("diaper").document(child_uid)
         intervals_ref = diaper_ref.collection("intervals")
 
         try:
             # Query 1: Get regular documents with date filtering
-            regular_docs = intervals_ref.where(
-                filter=firestore.FieldFilter("start", ">=", start_timestamp)
-            ).where(
-                filter=firestore.FieldFilter("start", "<", end_timestamp)
-            ).order_by("start").stream()
+            regular_docs = (
+                intervals_ref.where(filter=firestore.FieldFilter("start", ">=", start_timestamp))
+                .where(filter=firestore.FieldFilter("start", "<", end_timestamp))
+                .order_by("start")
+                .stream()
+            )
 
-            for doc in regular_docs:
+            async for doc in regular_docs:
                 data = doc.to_dict()
                 if not data or data.get("multi"):
                     continue  # Skip multi-entry docs from this query
 
-                event = {
-                    "start": data["start"],
-                    "mode": data.get("mode", "unknown"),
-                }
-                # Add optional fields if present
-                if "pooColor" in data:
-                    event["pooColor"] = data["pooColor"]
-                if "pooConsistency" in data:
-                    event["pooConsistency"] = data["pooConsistency"]
-                if "amount" in data:
-                    event["amount"] = data["amount"]
-                events.append(event)
+                entry = FirebaseDiaperData.model_validate(data)
+                events.append(entry)
 
             # Query 2: Get multi-entry documents (can't filter by nested start field)
-            multi_docs = intervals_ref.where(
-                filter=firestore.FieldFilter("multi", "==", True)
-            ).stream()
+            multi_docs = intervals_ref.where(filter=firestore.FieldFilter("multi", "==", True)).stream()
 
-            for doc in multi_docs:
+            async for doc in multi_docs:
                 data = doc.to_dict()
-                if not data or not isinstance(data.get("data"), dict):
+                if not data:
                     continue
 
-                # Iterate through batched entries and filter by date
-                for entry_id, entry in data["data"].items():
-                    if not isinstance(entry, dict) or "start" not in entry:
-                        continue
+                container = FirebaseDiaperMultiContainer.model_validate(data)
 
-                    entry_start = entry["start"]
+                # Iterate through batched entries and filter by date
+                for entry in container.data.values():
+                    entry_start = entry.start
                     if not (start_timestamp <= entry_start < end_timestamp):
                         continue
 
-                    event = {
-                        "start": entry_start,
-                        "mode": entry.get("mode", "unknown"),
-                    }
-                    # Add optional fields if present
-                    if "pooColor" in entry:
-                        event["pooColor"] = entry["pooColor"]
-                    if "pooConsistency" in entry:
-                        event["pooConsistency"] = entry["pooConsistency"]
-                    if "amount" in entry:
-                        event["amount"] = entry["amount"]
-                    events.append(event)
+                    events.append(entry)
 
-        except Exception as err:
+        except (GoogleAPICallError, ValidationError) as err:
             _LOGGER.error("Error fetching diaper intervals: %s", err)
 
         return events
 
-    def get_health_entries(
+    async def list_health_entries(
         self,
         child_uid: str,
         start_timestamp: int,
         end_timestamp: int,
-    ) -> list[dict]:
+    ) -> list[HealthDataEntry]:
         """
-        Fetch health/growth entries from Firestore for a date range.
+        Fetch health entries from Firestore for a date range.
 
         Args:
             child_uid: Child unique identifier
@@ -1672,67 +1741,50 @@ class HuckleberryAPI:
             end_timestamp: End of range (Unix timestamp in seconds)
 
         Returns:
-            List of health entry dicts with 'start' and optional measurement fields
+            List of Firebase-validated health entries
         """
-        events = []
-        client = self._get_firestore_client()
+        events: list[HealthDataEntry] = []
+        client = await self._get_firestore_client()
         health_ref = client.collection("health").document(child_uid)
         # Health uses "data" subcollection, not "intervals"
         data_ref = health_ref.collection("data")
 
         try:
             # Query 1: Get regular documents with date filtering
-            regular_docs = data_ref.where(
-                filter=firestore.FieldFilter("start", ">=", start_timestamp)
-            ).where(
-                filter=firestore.FieldFilter("start", "<", end_timestamp)
-            ).order_by("start").stream()
+            regular_docs = (
+                data_ref.where(filter=firestore.FieldFilter("start", ">=", start_timestamp))
+                .where(filter=firestore.FieldFilter("start", "<", end_timestamp))
+                .order_by("start")
+                .stream()
+            )
 
-            for doc in regular_docs:
+            async for doc in regular_docs:
                 data = doc.to_dict()
                 if not data or data.get("multi"):
                     continue  # Skip multi-entry docs from this query
 
-                event = {"start": data["start"]}
-                # Add optional measurement fields if present
-                if "weight" in data:
-                    event["weight"] = data["weight"]
-                if "height" in data:
-                    event["height"] = data["height"]
-                if "head" in data:
-                    event["head"] = data["head"]
-                events.append(event)
+                entry = _HEALTH_ENTRY_ADAPTER.validate_python(data)
+                events.append(entry)
 
             # Query 2: Get multi-entry documents (can't filter by nested start field)
-            multi_docs = data_ref.where(
-                filter=firestore.FieldFilter("multi", "==", True)
-            ).stream()
+            multi_docs = data_ref.where(filter=firestore.FieldFilter("multi", "==", True)).stream()
 
-            for doc in multi_docs:
+            async for doc in multi_docs:
                 data = doc.to_dict()
-                if not data or not isinstance(data.get("data"), dict):
+                if not data:
                     continue
 
-                # Iterate through batched entries and filter by date
-                for entry_id, entry in data["data"].items():
-                    if not isinstance(entry, dict) or "start" not in entry:
-                        continue
+                container = FirebaseHealthMultiContainer.model_validate(data)
 
-                    entry_start = entry["start"]
+                # Iterate through batched entries and filter by date
+                for entry in container.data.values():
+                    entry_start = entry.start
                     if not (start_timestamp <= entry_start < end_timestamp):
                         continue
 
-                    event = {"start": entry_start}
-                    # Add optional measurement fields if present
-                    if "weight" in entry:
-                        event["weight"] = entry["weight"]
-                    if "height" in entry:
-                        event["height"] = entry["height"]
-                    if "head" in entry:
-                        event["head"] = entry["head"]
-                    events.append(event)
+                    events.append(entry)
 
-        except Exception as err:
+        except (GoogleAPICallError, ValidationError) as err:
             _LOGGER.error("Error fetching health entries: %s", err)
 
         return events
