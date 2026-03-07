@@ -405,12 +405,12 @@ class FirebaseLastNursingData(StrictModel):
     Aggregated breast-feed summary in seconds (left + right durations).
     """
 
-    mode: Literal["breast"]
-    start: Number
-    duration: Number
-    leftDuration: Number
-    rightDuration: Number
-    offset: Number
+    mode: Literal["breast"] | None = None
+    start: Number | None = None
+    duration: Number | None = None
+    leftDuration: Number | None = None
+    rightDuration: Number | None = None
+    offset: Number | None = None
 
 
 class FirebaseLastSideData(StrictModel):
@@ -451,12 +451,12 @@ class FirebaseLastSolidData(StrictModel):
     Mirrors latest solids event summary and powers "last solids" downstream state.
     """
 
-    mode: Literal["solids"]
-    start: Number
-    foods: dict[str, SolidsFoodEntry]
+    mode: Literal["solids"] | None = None
+    start: Number | None = None
+    foods: dict[str, SolidsFoodEntry] | None = None
     reactions: dict[SolidsReaction, bool] | None = None
     notes: str | None = None
-    offset: Number
+    offset: Number | None = None
 
 
 class FirebaseFeedPrefs(StrictModel):
