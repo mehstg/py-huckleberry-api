@@ -272,9 +272,9 @@ class FirebaseLastSleepData(StrictModel):
     `start` and `duration` are in seconds; `offset` is timezone offset minutes.
     """
 
-    start: Number
-    duration: Number
-    offset: Number
+    start: Number | None = None
+    duration: Number | None = None
+    offset: Number | None = None
 
 
 class FirebaseSleepPrefs(StrictModel):
@@ -428,12 +428,12 @@ class FirebaseLastBottleData(StrictModel):
     - intervals use `amount`/`units`
     """
 
-    mode: Literal["bottle"]
-    start: Number
-    bottleType: BottleType
-    bottleAmount: Number
-    bottleUnits: VolumeUnits
-    offset: Number
+    mode: Literal["bottle"] | None = None
+    start: Number | None = None
+    bottleType: BottleType | None = None
+    bottleAmount: Number | None = None
+    bottleUnits: VolumeUnits | None = None
+    offset: Number | None = None
 
 
 class SolidsFoodEntry(StrictModel):
@@ -629,9 +629,9 @@ class FirebaseDiaperData(StrictModel):
 class FirebaseLastDiaperData(StrictModel):
     """diaper/{child_uid}.prefs.lastDiaper structure."""
 
-    start: Number
-    mode: DiaperMode
-    offset: Number
+    start: Number | None = None
+    mode: DiaperMode | None = None
+    offset: Number | None = None
 
 
 class FirebaseLastPottyData(StrictModel):
