@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- towncrier release notes start -->
 
+## [0.2.3] - 2026-03-12
+
+### Bugfixes
+
+- Updated required python to 3.14
+  Marked `lastUpdated` property as optional, older entries might not have this field ([#20](https://github.com/Woyken/py-huckleberry-api/issues/20))
+
+
 ## [0.2.2] - 2026-03-10
 
 ### Bugfixes
