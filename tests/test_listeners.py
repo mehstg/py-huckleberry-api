@@ -236,3 +236,26 @@ class TestRealtimeListeners:
         assert last_update.prefs is not None
         assert last_update.prefs.lastPotty is not None
         assert last_update.prefs.lastPotty.mode == "pee"
+
+    async def test_pump_listener(self, api: HuckleberryAPI, child_uid: str) -> None:
+        """Test pump real-time listener."""
+        updates: list[object] = []
+
+        def callback(data: object) -> None:
+            updates.append(data)
+
+        await api.setup_pump_listener(child_uid, callback)
+        await asyncio.sleep(2)
+
+        await api.log_pump(child_uid, entry_mode="total", amount=120.0, units="ml")
+        await asyncio.sleep(2)
+
+        await api.stop_all_listeners()
+
+        assert len(updates) > 0
+        last_update = updates[-1]
+        assert last_update.prefs is not None
+        assert last_update.prefs.lastPump is not None
+        assert last_update.prefs.lastPump.entryMode == "total"
+        assert last_update.prefs.lastPump.leftAmount == 60.0
+        assert last_update.prefs.lastPump.rightAmount == 60.0

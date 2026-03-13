@@ -44,9 +44,13 @@ from .firebase_types import (
     FirebaseLastDiaperData,
     FirebaseLastNursingData,
     FirebaseLastPottyData,
+    FirebaseLastPumpData,
     FirebaseLastSideData,
     FirebaseLastSleepData,
     FirebaseLastSolidData,
+    FirebasePumpDocumentData,
+    FirebasePumpIntervalData,
+    FirebasePumpMultiContainer,
     FirebaseSleepCondition,
     FirebaseSleepDetails,
     FirebaseSleepDocumentData,
@@ -61,6 +65,7 @@ from .firebase_types import (
     PooColor,
     PooConsistency,
     PottyResult,
+    PumpEntryMode,
     SolidsFoodEntry,
     SolidsReaction,
     VolumeUnits,
@@ -78,6 +83,7 @@ TDocumentData = TypeVar(
     FirebaseFeedDocumentData,
     FirebaseHealthDocumentData,
     FirebaseDiaperDocumentData,
+    FirebasePumpDocumentData,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -228,6 +234,8 @@ class HuckleberryAPI:
                     await self.setup_health_listener(child_uid, callback)
                 elif listener_type == "diaper":
                     await self.setup_diaper_listener(child_uid, callback)
+                elif listener_type == "pump":
+                    await self.setup_pump_listener(child_uid, callback)
                 _LOGGER.debug("Recreated %s listener for child %s", listener_type, child_uid)
             except (GoogleAPICallError, RuntimeError, TypeError, ValueError) as err:
                 _LOGGER.error("Error recreating %s listener for child %s: %s", listener_type, child_uid, err)
@@ -1147,7 +1155,7 @@ class HuckleberryAPI:
 
     async def _setup_listener(
         self,
-        collection_name: Literal["sleep", "feed", "health", "diaper"],
+        collection_name: Literal["sleep", "feed", "health", "diaper", "pump"],
         child_uid: str,
         callback: Callable[[TDocumentData], None],
     ) -> None:
@@ -1186,6 +1194,8 @@ class HuckleberryAPI:
                         validated = FirebaseFeedDocumentData.model_validate(payload)
                     elif collection_name == "health":
                         validated = FirebaseHealthDocumentData.model_validate(payload)
+                    elif collection_name == "pump":
+                        validated = FirebasePumpDocumentData.model_validate(payload)
                     else:
                         validated = FirebaseDiaperDocumentData.model_validate(payload)
                     callback(cast(TDocumentData, validated))
@@ -1218,6 +1228,12 @@ class HuckleberryAPI:
     ) -> None:
         """Set up real-time listener for diaper document changes."""
         await self._setup_listener("diaper", child_uid, callback)
+    
+    async def setup_pump_listener(
+        self, child_uid: str, callback: Callable[[FirebasePumpDocumentData], None]
+    ) -> None:
+        """Set up real-time listener for pump document changes."""
+        await self._setup_listener("pump", child_uid, callback)
 
     async def stop_all_listeners(self) -> None:
         """Stop all active real-time listeners."""
@@ -1498,6 +1514,104 @@ class HuckleberryAPI:
             _LOGGER.info("Growth data logged successfully")
         except GoogleAPICallError as err:
             _LOGGER.error("Failed to log growth data: %s", err)
+            raise
+
+    async def log_pump(
+        self,
+        child_uid: str,
+        entry_mode: PumpEntryMode,
+        left_amount: float | None = None,
+        right_amount: float | None = None,
+        amount: float | int | None = None,
+        units: VolumeUnits = "ml",
+        duration: float | None = None,
+        notes: str | None = None,
+    ) -> None:
+        """Log pump feeding event.
+
+        Args:
+            child_uid: Child unique identifier
+            entry_mode: Pump entry mode - "leftright" or "total"
+            left_amount: Left side pump amount (for leftright mode)
+            right_amount: Right side pump amount (for leftright mode)
+            amount: Total pump amount (for total mode)
+            units: Volume units - "ml" or "oz"
+            duration: Optional duration in seconds
+            notes: Optional notes about the pump session
+        """
+        _LOGGER.info(
+            "Logging pump for child %s: mode=%s, units=%s",
+            child_uid,
+            entry_mode,
+            units,
+        )
+
+        client = await self._get_firestore_client()
+        pump_ref = client.collection("pump").document(child_uid)
+
+        current_time = time.time()
+        interval_id = f"{int(current_time * 1000)}-{uuid.uuid4().hex[:20]}"
+
+        # Build pump interval data matching Huckleberry app structure
+        pump_data = FirebasePumpIntervalData(
+            start=current_time,
+            entryMode=entry_mode,
+            units=units,
+            offset=await self._get_timezone_offset_minutes(),
+            end_offset=await self._get_timezone_offset_minutes(),
+        )
+
+        # Add amounts based on entry mode
+        # Note: FirebasePumpIntervalData doesn't have a single 'amount' field;
+        # for total mode, we use leftAmount to represent the total
+        if entry_mode == "leftright":
+            if left_amount is not None:
+                pump_data.leftAmount = left_amount
+            if right_amount is not None:
+                pump_data.rightAmount = right_amount
+        elif entry_mode == "total":
+            # For total mode, use leftAmount to store the total amount
+            if amount is not None:
+                pump_data.leftAmount = amount / 2.0
+                pump_data.rightAmount = amount / 2.0
+
+        if duration is not None:
+            pump_data.duration = duration
+
+        if notes is not None:
+            pump_data.notes = notes
+
+        # Create interval document in pump/{child_uid}/intervals
+        try:
+            await pump_ref.collection("intervals").document(interval_id).set(to_firebase_dict(pump_data))
+            _LOGGER.info("Created pump interval: %s", interval_id)
+        except GoogleAPICallError as err:
+            _LOGGER.error("Failed to create pump interval: %s", err)
+            raise RuntimeError(f"Failed to log pump: {err}") from err
+
+        # Build last pump data for prefs
+        last_pump_data = FirebaseLastPumpData(
+            start=current_time,
+            entryMode=entry_mode,
+            leftAmount=left_amount if entry_mode == 'leftright' else amount / 2.0,
+            rightAmount=right_amount if entry_mode == 'leftright' else amount / 2.0,
+            units=units,
+            duration=duration,
+            offset=await self._get_timezone_offset_minutes(),
+        )
+
+        # Update prefs.lastPump and timestamps
+        try:
+            await pump_ref.update(
+                {
+                    "prefs.lastPump": to_firebase_dict(last_pump_data),
+                    "prefs.timestamp": {"seconds": current_time},
+                    "prefs.local_timestamp": current_time,
+                }
+            )
+            _LOGGER.info("Pump event logged successfully")
+        except GoogleAPICallError as err:
+            _LOGGER.error("Failed to update pump prefs: %s", err)
             raise
 
     async def get_latest_growth(self, child_uid: str) -> FirebaseGrowthData | None:
@@ -1787,5 +1901,67 @@ class HuckleberryAPI:
 
         except (GoogleAPICallError, ValidationError) as err:
             _LOGGER.error("Error fetching health entries: %s", err)
+
+        return events
+
+    async def list_pump_intervals(
+        self,
+        child_uid: str,
+        start_timestamp: int,
+        end_timestamp: int,
+    ) -> list[FirebasePumpIntervalData]:
+        """
+        Fetch pump intervals from Firestore for a date range.
+
+        Args:
+            child_uid: Child unique identifier
+            start_timestamp: Start of range (Unix timestamp in seconds)
+            end_timestamp: End of range (Unix timestamp in seconds)
+
+        Returns:
+            List of Firebase-validated pump interval entries
+        """
+        events: list[FirebasePumpIntervalData] = []
+        client = await self._get_firestore_client()
+        pump_ref = client.collection("pump").document(child_uid)
+        intervals_ref = pump_ref.collection("intervals")
+
+        try:
+            # Query 1: Get regular documents with date filtering
+            regular_docs = (
+                intervals_ref.where(filter=firestore.FieldFilter("start", ">=", start_timestamp))
+                .where(filter=firestore.FieldFilter("start", "<", end_timestamp))
+                .order_by("start")
+                .stream()
+            )
+
+            async for doc in regular_docs:
+                data = doc.to_dict()
+                if not data or data.get("multi"):
+                    continue  # Skip multi-entry docs from this query
+
+                entry = FirebasePumpIntervalData.model_validate(data)
+                events.append(entry)
+
+            # Query 2: Get multi-entry documents (can't filter by nested start field)
+            multi_docs = intervals_ref.where(filter=firestore.FieldFilter("multi", "==", True)).stream()
+
+            async for doc in multi_docs:
+                data = doc.to_dict()
+                if not data:
+                    continue
+
+                container = FirebasePumpMultiContainer.model_validate(data)
+
+                # Iterate through batched entries and filter by date
+                for entry in container.data.values():
+                    entry_start = entry.start
+                    if not (start_timestamp <= entry_start < end_timestamp):
+                        continue
+
+                    events.append(entry)
+
+        except (GoogleAPICallError, ValidationError) as err:
+            _LOGGER.error("Error fetching pump intervals: %s", err)
 
         return events

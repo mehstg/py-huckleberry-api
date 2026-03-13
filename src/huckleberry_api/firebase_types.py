@@ -790,6 +790,33 @@ class FirebasePumpMultiContainer(StrictModel):
     data: dict[str, FirebasePumpIntervalData]
 
 
+class FirebaseLastPumpData(StrictModel):
+    """pump/{child_uid}.prefs.lastPump structure."""
+
+    start: Number | None = None
+    entryMode: PumpEntryMode | None = None
+    leftAmount: Number | None = None
+    rightAmount: Number | None = None
+    units: VolumeUnits | None = None
+    duration: Number | None = None
+    offset: Number | None = None
+
+
+class FirebasePumpPrefs(StrictModel):
+    """pump/{child_uid}.prefs structure."""
+
+    lastPump: FirebaseLastPumpData | None = None
+    reminderV2: ReminderV2 | None = None
+    timestamp: FirebaseTimestamp | None = None
+    local_timestamp: Number | None = None
+
+
+class FirebasePumpDocumentData(StrictModel):
+    """pump/{child_uid} root document."""
+
+    prefs: FirebasePumpPrefs | None = None
+
+
 # ---------------------------------------------------------------------------
 # activities/{child_uid}
 # ---------------------------------------------------------------------------
