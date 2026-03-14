@@ -763,6 +763,55 @@ class FirebaseHealthMultiContainer(StrictModel):
 # ---------------------------------------------------------------------------
 
 
+class FirebaseLastPumpData(StrictModel):
+    """pump/{child_uid}.prefs.lastPump structure.
+
+    Live Firebase shows `entryMode`; for `total` entries the app stores half of the
+    total in each side field so leftAmount + rightAmount equals the entered total.
+    """
+
+    start: Number | None = None
+    duration: Number | None = None
+    entryMode: PumpEntryMode | None = None
+    leftAmount: Number | None = None
+    rightAmount: Number | None = None
+    units: VolumeUnits | None = None
+    offset: Number | None = None
+
+
+class FirebasePumpPrefs(StrictModel):
+    """pump/{child_uid}.prefs structure."""
+
+    lastPump: FirebaseLastPumpData | None = None
+    reminderV2: ReminderV2 | None = None
+    timestamp: FirebaseTimestamp | None = None
+    local_timestamp: Number | None = None
+
+
+class FirebasePumpTimerData(StrictModel):
+    """pump/{child_uid}.timer structure."""
+
+    active: bool
+    paused: bool | None = None
+    timestamp: FirebaseTimestamp | None = None
+    local_timestamp: Number | None = None
+    startTime: Number | None = Field(
+        default=None,
+        description="Observed pump timer field in milliseconds since epoch.",
+    )
+    entryMode: PumpEntryMode | None = None
+    units: VolumeUnits | None = None
+    notes: str | None = None
+    uuid: str
+
+
+class FirebasePumpDocumentData(StrictModel):
+    """pump/{child_uid} root document."""
+
+    timer: FirebasePumpTimerData | None = None
+    prefs: FirebasePumpPrefs | None = None
+
+
 class FirebasePumpIntervalData(StrictModel):
     """pump/{child_uid}/intervals row.
 
@@ -788,33 +837,6 @@ class FirebasePumpMultiContainer(StrictModel):
     hasMoreRoom: bool | None = None
     lastUpdated: Number | None = None
     data: dict[str, FirebasePumpIntervalData]
-
-
-class FirebaseLastPumpData(StrictModel):
-    """pump/{child_uid}.prefs.lastPump structure."""
-
-    start: Number | None = None
-    entryMode: PumpEntryMode | None = None
-    leftAmount: Number | None = None
-    rightAmount: Number | None = None
-    units: VolumeUnits | None = None
-    duration: Number | None = None
-    offset: Number | None = None
-
-
-class FirebasePumpPrefs(StrictModel):
-    """pump/{child_uid}.prefs structure."""
-
-    lastPump: FirebaseLastPumpData | None = None
-    reminderV2: ReminderV2 | None = None
-    timestamp: FirebaseTimestamp | None = None
-    local_timestamp: Number | None = None
-
-
-class FirebasePumpDocumentData(StrictModel):
-    """pump/{child_uid} root document."""
-
-    prefs: FirebasePumpPrefs | None = None
 
 
 # ---------------------------------------------------------------------------

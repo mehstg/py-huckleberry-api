@@ -13,6 +13,7 @@ This is a reverse-engineered API client that connects directly to Huckleberry's 
 - 🔐 **Firebase Authentication**: Secure email/password authentication with automatic token refresh
 - 💤 **Sleep Tracking**: Start, pause, resume, cancel, and complete sleep sessions
 - 🍼 **Feeding Tracking**: Track breastfeeding with left/right side switching
+- 🤱 **Pumping Tracking**: Log pumping sessions and fetch latest/history
 - 🧷 **Diaper Changes**: Log pee, poo, both, or dry checks with color/consistency
 - 📏 **Growth Measurements**: Record weight, height, and head circumference
 - 🔄 **Real-time Updates**: Firebase snapshot listeners for instant synchronization
@@ -30,6 +31,7 @@ pip install huckleberry-api
 
 ```python
 import asyncio
+from datetime import datetime
 import aiohttp
 
 from huckleberry_api import HuckleberryAPI
@@ -56,6 +58,13 @@ async def main() -> None:
         await api.complete_nursing(child_uid)
 
         await api.log_bottle(child_uid, amount=120.0, bottle_type="Formula", units="ml")
+        await api.log_pump(
+          child_uid,
+          start_time=datetime.now(),
+          total_amount=120.0,
+          duration=900,
+          units="ml",
+        )
         await api.log_diaper(
             child_uid,
             mode="both",
@@ -128,6 +137,10 @@ async def main() -> None:
   - `amount`: Volume fed (e.g., 120.0)
   - `units`: "ml" or "oz"
 
+### Pumping Tracking
+- `await log_pump(child_uid, start_time=..., total_amount=..., duration=..., units=...)` - Log pumping entry; total entries are stored split evenly across `leftAmount` and `rightAmount`
+- `await list_pump_intervals(child_uid, start_timestamp, end_timestamp)` - List pump history for a range
+
 ### Solids Tracking
 - `await list_solids_curated_foods()` - List curated solids food catalog
 - `await list_solids_custom_foods(child_uid, include_archived=False)` - List custom solids foods
@@ -149,6 +162,7 @@ async def main() -> None:
 - `await setup_sleep_listener(child_uid, callback)` - Listen to sleep updates
 - `await setup_feed_listener(child_uid, callback)` - Listen to feeding updates
 - `await setup_health_listener(child_uid, callback)` - Listen to health updates
+- `await setup_pump_listener(child_uid, callback)` - Listen to pump updates
 - `await stop_all_listeners()` - Stop all active listeners
 
 ## Type Definitions

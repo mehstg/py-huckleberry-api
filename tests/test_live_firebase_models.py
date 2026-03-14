@@ -31,9 +31,13 @@ from huckleberry_api.firebase_types import (
     FirebaseFeedMultiContainer,
     FirebaseGrowthData,
     FirebaseHealthDocumentData,
+    FirebaseLastPumpData,
     FirebaseMedicationData,
+    FirebasePumpDocumentData,
     FirebasePumpIntervalData,
     FirebasePumpMultiContainer,
+    FirebasePumpPrefs,
+    FirebasePumpTimerData,
     FirebaseSleepDocumentData,
     FirebaseSleepIntervalData,
     FirebaseSleepMultiContainer,
@@ -169,6 +173,23 @@ async def test_live_user_child_and_root_documents(api: HuckleberryAPI) -> None:
         if health_payload:
             FirebaseHealthDocumentData.model_validate(health_payload)
 
+        pump_doc = await db.collection("pump").document(child_uid).get()
+        pump_payload = _doc_to_dict(pump_doc)
+        if pump_payload:
+            pump_model = FirebasePumpDocumentData.model_validate(pump_payload)
+
+            pump_prefs_payload = _as_obj_dict(pump_payload.get("prefs"))
+            if pump_prefs_payload:
+                FirebasePumpPrefs.model_validate(pump_prefs_payload)
+                if pump_model.prefs and pump_model.prefs.lastPump is not None:
+                    FirebaseLastPumpData.model_validate(
+                        pump_model.prefs.lastPump.model_dump(by_alias=True, exclude_none=True)
+                    )
+
+            pump_timer_payload = _as_obj_dict(pump_payload.get("timer"))
+            if pump_timer_payload:
+                FirebasePumpTimerData.model_validate(pump_timer_payload)
+
 
 @pytest.mark.integration
 async def test_live_latest_sleep_and_diaper_intervals(api: HuckleberryAPI) -> None:
@@ -273,7 +294,9 @@ async def test_live_latest_health_pump_activities_and_foods(api: HuckleberryAPI)
             if not payload:
                 continue
             if _is_multi_wrapper(payload):
-                FirebasePumpMultiContainer.model_validate(payload)
+                pump_multi = FirebasePumpMultiContainer.model_validate(payload)
+                for entry in pump_multi.data.values():
+                    FirebasePumpIntervalData.model_validate(entry.model_dump(by_alias=True, exclude_none=True))
             else:
                 FirebasePumpIntervalData.model_validate(payload)
 

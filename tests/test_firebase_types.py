@@ -141,9 +141,8 @@ def test_pump_interval_model_total_mode() -> None:
         {
             "start": 1773175490.0,
             "entryMode": "total",
-            "leftAmount": None,
-            "rightAmount": None,
-            "amount": 3.1,
+            "leftAmount": 1.55,
+            "rightAmount": 1.55,
             "units": "oz",
             "offset": 420.0,
             "duration": 1500.0,
@@ -151,6 +150,8 @@ def test_pump_interval_model_total_mode() -> None:
     )
 
     assert model.entryMode == "total"
+    assert model.leftAmount == 1.55
+    assert model.rightAmount == 1.55
     assert model.units == "oz"
     assert model.offset == 420.0
     assert model.duration == 1500.0
@@ -261,7 +262,8 @@ def test_pump_multi_container_model() -> None:
                 "interval2": {
                     "start": 1773176490.0,
                     "entryMode": "total",
-                    "amount": 3.1,
+                    "leftAmount": 1.55,
+                    "rightAmount": 1.55,
                     "units": "oz",
                     "offset": 420.0,
                 },
@@ -274,3 +276,5 @@ def test_pump_multi_container_model() -> None:
     assert len(model.data) == 2
     assert "interval1" in model.data
     assert "interval2" in model.data
+    assert model.data["interval2"].leftAmount == 1.55
+    assert model.data["interval2"].rightAmount == 1.55
