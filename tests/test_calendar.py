@@ -9,6 +9,7 @@ from huckleberry_api.firebase_types import (
     FirebaseBreastFeedIntervalData,
     FirebaseGrowthData,
     FirebaseMedicationData,
+    FirebasePumpIntervalData,
     FirebaseSolidsFeedIntervalData,
 )
 
@@ -114,6 +115,31 @@ class TestCalendarIntervals:
                 assert has_measurement
             elif isinstance(entry, FirebaseMedicationData):
                 assert entry.medication_name is not None or entry.amount is not None
+
+    async def test_list_pump_intervals(self, api: HuckleberryAPI, child_uid: str) -> None:
+        """Test fetching pump intervals for a date range."""
+        await api.log_pump(
+            child_uid,
+            start_time=datetime.now(timezone.utc),
+            total_amount=30.0,
+            duration=600,
+        )
+        await asyncio.sleep(1)
+
+        now = datetime.now(timezone.utc)
+        start_ts = int(now.timestamp()) - 3600
+        end_ts = int(now.timestamp()) + 60
+
+        intervals = await api.list_pump_intervals(child_uid, start_ts, end_ts)
+
+        assert isinstance(intervals, list)
+        assert len(intervals) >= 1
+
+        for interval in intervals:
+            assert isinstance(interval, FirebasePumpIntervalData)
+            assert isinstance(interval.start, (int, float))
+            assert interval.entryMode in ("leftright", "total")
+            assert interval.units in ("ml", "oz")
 
     async def test_date_range_filtering(self, api: HuckleberryAPI, child_uid: str) -> None:
         """Test that date range filtering works correctly."""

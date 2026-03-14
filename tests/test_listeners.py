@@ -1,9 +1,12 @@
 """Real-time listener tests for Huckleberry API."""
 
 import asyncio
+import time
+from datetime import datetime, timezone
 from typing import Any
 
 from huckleberry_api import HuckleberryAPI
+from huckleberry_api.firebase_types import FirebasePumpDocumentData
 from huckleberry_api.models import SolidsFoodReference
 
 
@@ -236,3 +239,39 @@ class TestRealtimeListeners:
         assert last_update.prefs is not None
         assert last_update.prefs.lastPotty is not None
         assert last_update.prefs.lastPotty.mode == "pee"
+
+    async def test_pump_listener(self, api: HuckleberryAPI, child_uid: str) -> None:
+        """Test pump real-time listener."""
+        updates: list[Any] = []
+        minimum_start = time.time()
+        db = await api._get_firestore_client()
+        pump_doc = await db.collection("pump").document(child_uid).get()
+        pump_data = pump_doc.to_dict() or {}
+        pump_model = FirebasePumpDocumentData.model_validate(pump_data)
+        latest_pump = pump_model.prefs.lastPump if pump_model.prefs else None
+        if latest_pump is not None and latest_pump.start is not None:
+            minimum_start = max(minimum_start, float(latest_pump.start) + 60.0)
+
+        def callback(data: Any) -> None:
+            updates.append(data)
+
+        await api.setup_pump_listener(child_uid, callback)
+        await asyncio.sleep(2)
+
+        await api.log_pump(
+            child_uid,
+            start_time=datetime.fromtimestamp(minimum_start, tz=timezone.utc),
+            total_amount=25.0,
+            duration=900,
+            notes="listener test",
+        )
+        await asyncio.sleep(2)
+
+        await api.stop_all_listeners()
+
+        assert len(updates) > 0
+        last_update = updates[-1]
+        assert last_update.prefs is not None
+        assert last_update.prefs.lastPump is not None
+        assert last_update.prefs.lastPump.duration == 900.0
+        assert last_update.prefs.lastPump.entryMode == "total"
