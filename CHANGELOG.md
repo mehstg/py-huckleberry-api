@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- towncrier release notes start -->
 
+## [0.3.0] - 2026-03-15
+
+### Features
+
+- Added pump tracking support with strict Firebase pump models, range queries, and real-time pump listeners. Pump entries can now be logged with `log_pump(...)`, total amounts are stored using the live app's split-per-side payload shape. ([#18](https://github.com/Woyken/py-huckleberry-api/issues/18))
+
+### Bugfixes
+
+- Allowed breastfeed intervals to omit `leftDuration` and `rightDuration`, so `list_feed_intervals(...)` can parse Firebase entries that do not store per-side durations. ([#25](https://github.com/Woyken/py-huckleberry-api/issues/25))
+
+
 ## [0.2.3] - 2026-03-12
 
 ### Bugfixes

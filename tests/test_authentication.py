@@ -2,6 +2,7 @@
 
 import asyncio
 import time
+from types import SimpleNamespace
 
 import aiohttp
 import pytest
@@ -11,6 +12,55 @@ from huckleberry_api import HuckleberryAPI
 
 class TestAuthentication:
     """Test authentication functionality."""
+
+    async def test_authenticate_invalid_credentials_includes_firebase_error_details(
+        self, websession: aiohttp.ClientSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test authentication errors include Firebase response details."""
+
+        class FakeResponse:
+            def __init__(self) -> None:
+                self.status = 400
+                self.reason = "Bad Request"
+                self.headers = {}
+                self.request_info = SimpleNamespace(real_url="https://identitytoolkit.googleapis.com/")
+                self.history = ()
+
+            async def __aenter__(self) -> FakeResponse:
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb) -> bool:
+                return False
+
+            async def text(self) -> str:
+                return '{"error":{"message":"INVALID_LOGIN_CREDENTIALS","errors":[{"message":"INVALID_LOGIN_CREDENTIALS"}]}}'
+
+            async def json(self, *args, **kwargs) -> dict[str, object]:
+                return {
+                    "error": {
+                        "message": "INVALID_LOGIN_CREDENTIALS",
+                        "errors": [{"message": "INVALID_LOGIN_CREDENTIALS"}],
+                    }
+                }
+
+        invalid_api = HuckleberryAPI(
+            email="invalid@test.com", password="wrongpassword", timezone="UTC", websession=websession
+        )
+
+        def fake_post(*args, **kwargs) -> FakeResponse:
+            return FakeResponse()
+
+        monkeypatch.setattr(websession, "post", fake_post)
+
+        with pytest.raises(aiohttp.ClientResponseError) as exc_info:
+            await invalid_api.authenticate()
+
+        assert exc_info.value.status == 400
+        assert "Authentication failed with HTTP 400 Bad Request" in exc_info.value.message
+        assert (
+            '{"error":{"message":"INVALID_LOGIN_CREDENTIALS","errors":[{"message":"INVALID_LOGIN_CREDENTIALS"}]}}'
+            in exc_info.value.message
+        )
 
     async def test_authenticate_success(self, api: HuckleberryAPI) -> None:
         """Test successful authentication."""

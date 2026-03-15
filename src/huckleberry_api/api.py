@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 import uuid
@@ -92,6 +93,32 @@ _FEED_INTERVAL_ADAPTER = TypeAdapter(FirebaseFeedIntervalData)
 _HEALTH_ENTRY_ADAPTER = TypeAdapter(HealthDataEntry)
 
 
+async def _raise_for_status_with_details(response: aiohttp.ClientResponse, operation: str) -> None:
+    """Raise an aiohttp status error with the raw response payload included."""
+    if response.status < 400:
+        return
+
+    message = f"{operation} failed with HTTP {response.status}"
+    if response.reason:
+        message = f"{message} {response.reason}"
+
+    try:
+        response_payload = await response.json(content_type=None)
+        message = f"{message}: {json.dumps(response_payload, separators=(',', ':'))}"
+    except aiohttp.ContentTypeError, json.JSONDecodeError, UnicodeDecodeError, ValueError:
+        response_body = await response.text()
+        if response_body:
+            message = f"{message}: {response_body}"
+
+    raise aiohttp.ClientResponseError(
+        response.request_info,
+        response.history,
+        status=response.status,
+        message=message,
+        headers=response.headers,
+    )
+
+
 class FirebaseTokenCredentials(Credentials):
     """Custom credentials class for Firebase SDK."""
 
@@ -150,7 +177,7 @@ class HuckleberryAPI:
                 },
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as response:
-                response.raise_for_status()
+                await _raise_for_status_with_details(response, "Authentication")
                 data = await response.json()
             self.id_token = data["idToken"]
             self.refresh_token = data["refreshToken"]
@@ -159,8 +186,7 @@ class HuckleberryAPI:
 
             _LOGGER.info("Successfully authenticated with Huckleberry")
         except aiohttp.ClientResponseError as err:
-            _LOGGER.error("Authentication failed: %s", err)
-            _LOGGER.error("Firebase status error: status=%s message=%s", err.status, err.message)
+            _LOGGER.error("Authentication failed: status=%s message=%s", err.status, err.message)
             raise
         except aiohttp.ClientError as err:
             _LOGGER.error("Authentication request failed: %s", err)
@@ -190,7 +216,7 @@ class HuckleberryAPI:
                 },
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as response:
-                response.raise_for_status()
+                await _raise_for_status_with_details(response, "Token refresh")
                 data = await response.json()
         except aiohttp.ClientError as err:
             _LOGGER.error("Failed to refresh authentication token: %s", err)

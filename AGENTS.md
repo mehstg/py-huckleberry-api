@@ -1,6 +1,4 @@
-# Huckleberry API — Minimal Agent Guide
-
-This file is intentionally minimal.
+# Huckleberry API
 
 ## Source of Truth
 
@@ -13,11 +11,11 @@ This file is intentionally minimal.
 
 1. **Validate values before adding/changing them**
    - For enums, modes, units, state values, keys, or option lists originating from the app/Firebase schema, validate against APK/Firebase evidence first.
-   - Never add guessed values.
+   - Never add guessed values. If key or value cannot ve verified with decompiled sources or live data, it must not be added.
 
 2. **Keep types strict**
    - Prefer explicit strict models and constrained literals.
-   - Avoid loosening to broad `Any`/open dicts/lists unless evidence requires it.
+   - Avoid loosening to broad `Any`/open dicts/lists.
 
 3. **Use `uv` for Python commands**
    - Run tests and Python commands with `uv` (for example: `uv run pytest ...`).
@@ -35,4 +33,3 @@ This file is intentionally minimal.
 When discovering new payload structures or semantics:
 - Update `src/huckleberry_api/firebase_types.py` first.
 - Add/update tests as needed.
-- Keep this file concise.
