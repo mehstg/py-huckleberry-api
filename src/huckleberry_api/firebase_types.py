@@ -529,8 +529,8 @@ class FirebaseBreastFeedIntervalData(StrictModel):
     start: Number
     lastSide: FeedSide
     lastUpdated: Number | None = None
-    leftDuration: Number
-    rightDuration: Number
+    leftDuration: Number | None = None
+    rightDuration: Number | None = None
     offset: Number
     end_offset: Number | None = None
     notes: str | None = None

@@ -63,8 +63,8 @@ class TestCalendarIntervals:
         for interval in intervals:
             assert isinstance(interval.start, (int, float))
             if isinstance(interval, FirebaseBreastFeedIntervalData):
-                assert isinstance(interval.leftDuration, (int, float))
-                assert isinstance(interval.rightDuration, (int, float))
+                assert interval.leftDuration is None or isinstance(interval.leftDuration, (int, float))
+                assert interval.rightDuration is None or isinstance(interval.rightDuration, (int, float))
             elif isinstance(interval, FirebaseBottleFeedIntervalData):
                 assert isinstance(interval.amount, (int, float))
             elif isinstance(interval, FirebaseSolidsFeedIntervalData):
