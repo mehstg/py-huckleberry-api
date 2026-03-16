@@ -1,6 +1,9 @@
 """Growth tracking tests for Huckleberry API."""
 
 import asyncio
+from datetime import datetime, timedelta, timezone
+
+from google.cloud import firestore
 
 from huckleberry_api import HuckleberryAPI
 
@@ -10,7 +13,14 @@ class TestGrowthTracking:
 
     async def test_log_growth_metric(self, api: HuckleberryAPI, child_uid: str) -> None:
         """Test logging growth measurement in metric units."""
-        await api.log_growth(child_uid, weight=5.2, height=52.0, head=35.0, units="metric")
+        await api.log_growth(
+            child_uid,
+            start_time=datetime.now(timezone.utc).replace(microsecond=0),
+            weight=5.2,
+            height=52.0,
+            head=35.0,
+            units="metric",
+        )
         await asyncio.sleep(1)
 
         # Verify it was logged by checking health collection
@@ -22,7 +32,13 @@ class TestGrowthTracking:
 
     async def test_log_growth_imperial(self, api: HuckleberryAPI, child_uid: str) -> None:
         """Test logging supported imperial growth measurements."""
-        await api.log_growth(child_uid, weight=11.5, head=13.8, units="imperial")
+        await api.log_growth(
+            child_uid,
+            start_time=datetime.now(timezone.utc).replace(microsecond=0),
+            weight=11.5,
+            head=13.8,
+            units="imperial",
+        )
         await asyncio.sleep(1)
 
         db = await api._get_firestore_client()
@@ -51,3 +67,20 @@ class TestGrowthTracking:
             assert growth_data.heightUnits in ("cm", "ft.in")
         if growth_data.headUnits is not None:
             assert growth_data.headUnits in ("hcm", "hin")
+
+    async def test_log_growth_with_explicit_start_time(self, api: HuckleberryAPI, child_uid: str) -> None:
+        """Test logging growth with an explicit past timestamp."""
+        start_time = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(hours=5)
+
+        await api.log_growth(child_uid, start_time=start_time, weight=6.1, units="metric")
+        await asyncio.sleep(1)
+
+        db = await api._get_firestore_client()
+        data_ref = db.collection("health").document(child_uid).collection("data")
+        matching = list(await data_ref.where(filter=firestore.FieldFilter("start", "==", start_time.timestamp())).get())
+
+        assert matching
+        growth_data = matching[0].to_dict()
+        assert growth_data is not None
+        assert growth_data["start"] == start_time.timestamp()
+        assert growth_data["weight"] == 6.1

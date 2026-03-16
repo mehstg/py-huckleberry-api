@@ -1,6 +1,7 @@
 """Sleep tracking tests for Huckleberry API."""
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 from google.cloud import firestore
 
@@ -97,3 +98,23 @@ class TestSleepTracking:
         assert "start" in interval_data
         assert "duration" in interval_data
         assert interval_data["duration"] >= 3  # At least 3 seconds
+
+    async def test_log_sleep_with_explicit_times(self, api: HuckleberryAPI, child_uid: str) -> None:
+        """Test logging a completed sleep interval with explicit start and end times."""
+        end_time = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(hours=2)
+        start_time = end_time - timedelta(minutes=95)
+
+        await api.log_sleep(child_uid, start_time=start_time, end_time=end_time)
+        await asyncio.sleep(1)
+
+        db = await api._get_firestore_client()
+        intervals_ref = db.collection("sleep").document(child_uid).collection("intervals")
+        matching = list(
+            await intervals_ref.where(filter=firestore.FieldFilter("start", "==", int(start_time.timestamp()))).get()
+        )
+
+        assert matching
+        interval_data = matching[0].to_dict()
+        assert interval_data is not None
+        assert interval_data["start"] == int(start_time.timestamp())
+        assert interval_data["duration"] == int((end_time - start_time).total_seconds())

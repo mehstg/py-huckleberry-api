@@ -74,7 +74,7 @@ class TestCalendarIntervals:
     async def test_list_diaper_intervals(self, api: HuckleberryAPI, child_uid: str) -> None:
         """Test fetching diaper intervals for a date range."""
         # Create a diaper entry first
-        await api.log_diaper(child_uid, mode="pee")
+        await api.log_diaper(child_uid, start_time=datetime.now(timezone.utc).replace(microsecond=0), mode="pee")
         await asyncio.sleep(1)
 
         # Query for intervals in the last hour
@@ -95,7 +95,12 @@ class TestCalendarIntervals:
     async def test_list_health_entries(self, api: HuckleberryAPI, child_uid: str) -> None:
         """Test fetching health/growth entries for a date range."""
         # Create a health entry first
-        await api.log_growth(child_uid, weight=5.0, units="metric")
+        await api.log_growth(
+            child_uid,
+            start_time=datetime.now(timezone.utc).replace(microsecond=0),
+            weight=5.0,
+            units="metric",
+        )
         await asyncio.sleep(1)
 
         # Query for entries in the last hour

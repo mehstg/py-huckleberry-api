@@ -2,6 +2,7 @@
 
 import asyncio
 import time
+from datetime import datetime, timedelta, timezone
 
 from google.cloud import firestore
 
@@ -10,6 +11,17 @@ from huckleberry_api import HuckleberryAPI
 
 class TestBottleFeeding:
     """Test bottle feeding functionality."""
+
+    async def _next_bottle_start_time(self, api: HuckleberryAPI, child_uid: str) -> datetime:
+        """Return a bottle timestamp newer than the current latest summary."""
+        db = await api._get_firestore_client()
+        feed_doc = await db.collection("feed").document(child_uid).get()
+        data = feed_doc.to_dict() or {}
+        last_bottle = ((data.get("prefs") or {}).get("lastBottle") or {}).get("start")
+        minimum_start = time.time()
+        if isinstance(last_bottle, int | float):
+            minimum_start = max(minimum_start, float(last_bottle) + 60.0)
+        return datetime.fromtimestamp(minimum_start, tz=timezone.utc).replace(microsecond=0)
 
     async def _find_recent_bottle_interval(
         self,
@@ -59,8 +71,9 @@ class TestBottleFeeding:
     async def test_log_bottle_formula(self, api: HuckleberryAPI, child_uid: str) -> None:
         """Test logging formula bottle feeding."""
         # Log formula bottle
+        start_time = await self._next_bottle_start_time(api, child_uid)
         created_after = time.time()
-        await api.log_bottle(child_uid, amount=120.0, bottle_type="Formula", units="ml")
+        await api.log_bottle(child_uid, start_time=start_time, amount=120.0, bottle_type="Formula", units="ml")
         await asyncio.sleep(2)
 
         interval_data = await self._find_recent_bottle_interval(
@@ -86,6 +99,7 @@ class TestBottleFeeding:
         assert data is not None
         prefs = data.get("prefs", {})
         assert "lastBottle" in prefs
+        assert prefs["lastBottle"]["start"] == start_time.timestamp()
         assert prefs["lastBottle"]["mode"] == "bottle"
         assert prefs["lastBottle"]["bottleType"] == "Formula"
         assert prefs["lastBottle"]["bottleAmount"] == 120.0
@@ -94,8 +108,9 @@ class TestBottleFeeding:
     async def test_log_bottle_breast_milk(self, api: HuckleberryAPI, child_uid: str) -> None:
         """Test logging breast milk bottle feeding."""
         # Log breast milk bottle
+        start_time = await self._next_bottle_start_time(api, child_uid)
         created_after = time.time()
-        await api.log_bottle(child_uid, amount=90.0, bottle_type="Breast Milk", units="ml")
+        await api.log_bottle(child_uid, start_time=start_time, amount=90.0, bottle_type="Breast Milk", units="ml")
         await asyncio.sleep(2)
 
         interval_data = await self._find_recent_bottle_interval(
@@ -114,8 +129,9 @@ class TestBottleFeeding:
     async def test_log_bottle_ounces(self, api: HuckleberryAPI, child_uid: str) -> None:
         """Test logging bottle feeding with ounces."""
         # Log with oz units
+        start_time = await self._next_bottle_start_time(api, child_uid)
         created_after = time.time()
-        await api.log_bottle(child_uid, amount=4.0, bottle_type="Formula", units="oz")
+        await api.log_bottle(child_uid, start_time=start_time, amount=4.0, bottle_type="Formula", units="oz")
         await asyncio.sleep(2)
 
         interval_data = await self._find_recent_bottle_interval(
@@ -132,8 +148,9 @@ class TestBottleFeeding:
     async def test_log_bottle_cow_milk(self, api: HuckleberryAPI, child_uid: str) -> None:
         """Test logging cow milk bottle feeding."""
         # Log cow milk bottle
+        start_time = await self._next_bottle_start_time(api, child_uid)
         created_after = time.time()
-        await api.log_bottle(child_uid, amount=100.0, bottle_type="Cow Milk", units="ml")
+        await api.log_bottle(child_uid, start_time=start_time, amount=100.0, bottle_type="Cow Milk", units="ml")
         await asyncio.sleep(2)
 
         interval_data = await self._find_recent_bottle_interval(
@@ -151,8 +168,9 @@ class TestBottleFeeding:
     async def test_log_bottle_default_params(self, api: HuckleberryAPI, child_uid: str) -> None:
         """Test logging bottle feeding with default parameters."""
         # Log with defaults (Formula, ml)
+        start_time = await self._next_bottle_start_time(api, child_uid)
         created_after = time.time()
-        await api.log_bottle(child_uid, amount=150.0)
+        await api.log_bottle(child_uid, start_time=start_time, amount=150.0)
         await asyncio.sleep(2)
 
         interval_data = await self._find_recent_bottle_interval(
@@ -171,7 +189,14 @@ class TestBottleFeeding:
     async def test_bottle_feeding_updates_prefs(self, api: HuckleberryAPI, child_uid: str) -> None:
         """Test that bottle feeding updates document-level preferences."""
         # Log bottle feeding
-        await api.log_bottle(child_uid, amount=110.0, bottle_type="Breast Milk", units="oz")
+        start_time = await self._next_bottle_start_time(api, child_uid)
+        await api.log_bottle(
+            child_uid,
+            start_time=start_time,
+            amount=110.0,
+            bottle_type="Breast Milk",
+            units="oz",
+        )
         await asyncio.sleep(2)
 
         # Check document-level prefs updated
@@ -182,6 +207,7 @@ class TestBottleFeeding:
         prefs = data.get("prefs", {})
 
         # Check document-level defaults
+        assert prefs.get("lastBottle", {}).get("start") == start_time.timestamp()
         assert prefs.get("bottleType") == "Breast Milk"
         assert prefs.get("bottleAmount") == 110.0
         assert prefs.get("bottleUnits") == "oz"
@@ -191,3 +217,62 @@ class TestBottleFeeding:
         assert prefs["lastBottle"]["bottleType"] == "Breast Milk"
         assert prefs["lastBottle"]["bottleAmount"] == 110.0
         assert prefs["lastBottle"]["bottleUnits"] == "oz"
+
+    async def test_log_bottle_with_explicit_start_time(self, api: HuckleberryAPI, child_uid: str) -> None:
+        """Test logging bottle feeding at an explicit past timestamp."""
+        start_time = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(hours=2)
+
+        await api.log_bottle(
+            child_uid,
+            start_time=start_time,
+            amount=75.0,
+            bottle_type="Formula",
+            units="ml",
+        )
+        await asyncio.sleep(1)
+
+        db = await api._get_firestore_client()
+        intervals_ref = db.collection("feed").document(child_uid).collection("intervals")
+        matching = list(
+            await intervals_ref.where(filter=firestore.FieldFilter("start", "==", start_time.timestamp())).get()
+        )
+        bottle_entries = [doc.to_dict() for doc in matching if (doc.to_dict() or {}).get("mode") == "bottle"]
+
+        assert bottle_entries
+        interval_data = bottle_entries[0]
+        assert interval_data is not None
+        assert interval_data["amount"] == 75.0
+        assert interval_data["bottleType"] == "Formula"
+
+    async def test_older_bottle_entry_does_not_replace_latest_summary(
+        self, api: HuckleberryAPI, child_uid: str
+    ) -> None:
+        """Test that backfilled bottle entries do not overwrite the latest bottle summary."""
+        newer_start = await self._next_bottle_start_time(api, child_uid)
+        older_start = newer_start - timedelta(hours=4)
+
+        await api.log_bottle(
+            child_uid,
+            start_time=newer_start,
+            amount=120.0,
+            bottle_type="Breast Milk",
+            units="ml",
+        )
+        await asyncio.sleep(1)
+        await api.log_bottle(
+            child_uid,
+            start_time=older_start,
+            amount=60.0,
+            bottle_type="Formula",
+            units="ml",
+        )
+        await asyncio.sleep(1)
+
+        db = await api._get_firestore_client()
+        feed_doc = await db.collection("feed").document(child_uid).get()
+        data = feed_doc.to_dict() or {}
+        last_bottle = (data.get("prefs") or {}).get("lastBottle") or {}
+
+        assert last_bottle.get("start") == newer_start.timestamp()
+        assert last_bottle.get("bottleType") == "Breast Milk"
+        assert last_bottle.get("bottleAmount") == 120.0

@@ -73,6 +73,7 @@ class TestRealtimeListeners:
 
         await api.log_solids(
             child_uid,
+            start_time=datetime.now(timezone.utc).replace(microsecond=0),
             foods=[
                 SolidsFoodReference(
                     id=curated[0].id,
@@ -156,7 +157,12 @@ class TestRealtimeListeners:
         await api.setup_health_listener(child_uid, callback)
         await asyncio.sleep(2)
 
-        await api.log_growth(child_uid, weight=5.5, units="metric")
+        await api.log_growth(
+            child_uid,
+            start_time=datetime.now(timezone.utc).replace(microsecond=0),
+            weight=5.5,
+            units="metric",
+        )
         await asyncio.sleep(2)
 
         await api.stop_all_listeners()
@@ -176,7 +182,13 @@ class TestRealtimeListeners:
         await api.setup_health_listener(child_uid, callback)
         await asyncio.sleep(2)
 
-        await api.log_growth(child_uid, weight=11.5, head=13.8, units="imperial")
+        await api.log_growth(
+            child_uid,
+            start_time=datetime.now(timezone.utc).replace(microsecond=0),
+            weight=11.5,
+            head=13.8,
+            units="imperial",
+        )
         await asyncio.sleep(2)
 
         await api.stop_all_listeners()
@@ -209,7 +221,7 @@ class TestRealtimeListeners:
         await api.setup_diaper_listener(child_uid, callback)
         await asyncio.sleep(2)
 
-        await api.log_diaper(child_uid, mode="pee")
+        await api.log_diaper(child_uid, start_time=datetime.now(timezone.utc).replace(microsecond=0), mode="pee")
         await asyncio.sleep(2)
 
         await api.stop_all_listeners()
@@ -229,7 +241,13 @@ class TestRealtimeListeners:
         await api.setup_diaper_listener(child_uid, callback)
         await asyncio.sleep(2)
 
-        await api.log_potty(child_uid, mode="pee", how_it_happened="accident", pee_amount="little")
+        await api.log_potty(
+            child_uid,
+            start_time=datetime.now(timezone.utc).replace(microsecond=0),
+            mode="pee",
+            how_it_happened="accident",
+            pee_amount="little",
+        )
         await asyncio.sleep(2)
 
         await api.stop_all_listeners()

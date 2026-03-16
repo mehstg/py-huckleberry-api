@@ -31,6 +31,7 @@ from .firebase_types import (
     FirebaseActivityIntervalData,
     FirebaseActivityMultiContainer,
     FirebaseBottleFeedIntervalData,
+    FirebaseBreastFeedIntervalData,
     FirebaseChildDocument,
     FirebaseCuratedFoodDocument,
     FirebaseCustomFoodTypeDocument,
@@ -66,6 +67,8 @@ from .firebase_types import (
     FirebaseSleepTimerData,
     FirebaseSolidsFeedIntervalData,
     FirebaseTimestamp,
+    FirebaseTypesAvailableTypes,
+    FirebaseTypesDocument,
     FirebaseUserDocument,
     HealthDataEntry,
     PooColor,
@@ -629,6 +632,62 @@ class HuckleberryAPI:
 
         _LOGGER.info("Sleep completed for child %s (duration %ss)", child_uid, duration_sec)
 
+    async def log_sleep(
+        self,
+        child_uid: str,
+        *,
+        start_time: datetime,
+        end_time: datetime,
+        details: FirebaseSleepDetails | None = None,
+    ) -> None:
+        """Log a completed sleep interval without using the live timer."""
+        start_timestamp = start_time.timestamp()
+        end_timestamp = end_time.timestamp()
+        if end_timestamp < start_timestamp:
+            raise ValueError("end_time must be after start_time")
+
+        current_time = time.time()
+        duration_sec = int(end_timestamp - start_timestamp)
+        sleep_interval = FirebaseSleepIntervalData(
+            start=int(start_timestamp),
+            duration=duration_sec,
+            offset=await self._get_timezone_offset_minutes(),
+            end_offset=await self._get_timezone_offset_minutes(),
+            details=details,
+            lastUpdated=current_time,
+        )
+        last_sleep_data = FirebaseLastSleepData(
+            start=int(start_timestamp),
+            duration=duration_sec,
+            offset=await self._get_timezone_offset_minutes(),
+        )
+
+        client = await self._get_firestore_client()
+        sleep_ref = client.collection("sleep").document(child_uid)
+        sleep_doc = await sleep_ref.get()
+        sleep_model = FirebaseSleepDocumentData.model_validate(sleep_doc.to_dict() or {})
+        existing_last_sleep = sleep_model.prefs.lastSleep if sleep_model.prefs else None
+        existing_last_sleep_start = existing_last_sleep.start if existing_last_sleep else None
+        should_update_last_sleep = existing_last_sleep_start is None or start_timestamp >= float(
+            existing_last_sleep_start
+        )
+
+        await sleep_ref.collection("intervals").document(uuid.uuid4().hex[:16]).set(to_firebase_dict(sleep_interval))
+
+        if should_update_last_sleep:
+            await sleep_ref.set(
+                {
+                    "prefs": {
+                        "lastSleep": to_firebase_dict(last_sleep_data),
+                        "timestamp": {"seconds": current_time},
+                        "local_timestamp": current_time,
+                    }
+                },
+                merge=True,
+            )
+
+        _LOGGER.info("Sleep logged for child %s (updated_last=%s)", child_uid, should_update_last_sleep)
+
     async def start_nursing(self, child_uid: str, side: FeedSide = "left") -> None:
         """Start nursing tracking."""
         _LOGGER.info("Starting nursing for child %s on %s side", child_uid, side)
@@ -908,19 +967,19 @@ class HuckleberryAPI:
         # Create interval document for history (feed/{child_uid}/intervals)
         feed_intervals_ref = feed_ref.collection("intervals").document(interval_id)
 
-        breast_interval = {
-            "mode": "breast",
-            "start": feed_start_time,
-            "lastSide": last_side_value,
-            "lastUpdated": now_time,
-            "leftDuration": left_duration,
-            "rightDuration": right_duration,
-            "offset": await self._get_timezone_offset_minutes(),
-            "end_offset": await self._get_timezone_offset_minutes(),
-        }
+        breast_interval = FirebaseBreastFeedIntervalData(
+            mode="breast",
+            start=feed_start_time,
+            lastSide=last_side_value,
+            lastUpdated=now_time,
+            leftDuration=left_duration,
+            rightDuration=right_duration,
+            offset=await self._get_timezone_offset_minutes(),
+            end_offset=await self._get_timezone_offset_minutes(),
+        )
 
         try:
-            await feed_intervals_ref.set(breast_interval)
+            await feed_intervals_ref.set(to_firebase_dict(breast_interval))
             _LOGGER.info("Created nursing interval entry: %s", interval_id)
         except GoogleAPICallError as err:
             _LOGGER.error("Failed to create nursing interval entry: %s", err)
@@ -961,9 +1020,92 @@ class HuckleberryAPI:
             "Nursing completed (total duration %ss, L:%ss R:%ss)", total_duration, left_duration, right_duration
         )
 
+    async def log_nursing(
+        self,
+        child_uid: str,
+        *,
+        start_time: datetime,
+        end_time: datetime,
+        side: FeedSide = "left",
+        left_duration: float | int | None = None,
+        right_duration: float | int | None = None,
+    ) -> None:
+        """Log a completed nursing interval without using the live timer."""
+        start_timestamp = start_time.timestamp()
+        end_timestamp = end_time.timestamp()
+        if end_timestamp < start_timestamp:
+            raise ValueError("end_time must be after start_time")
+
+        if (left_duration is None) != (right_duration is None):
+            raise ValueError("Provide both left_duration and right_duration together")
+
+        if left_duration is None and right_duration is None:
+            total_duration = float(end_timestamp - start_timestamp)
+            resolved_left_duration = total_duration if side == "left" else 0.0
+            resolved_right_duration = total_duration if side == "right" else 0.0
+        else:
+            resolved_left_duration = float(left_duration or 0.0)
+            resolved_right_duration = float(right_duration or 0.0)
+            if resolved_left_duration < 0 or resolved_right_duration < 0:
+                raise ValueError("left_duration and right_duration must be non-negative")
+            total_duration = resolved_left_duration + resolved_right_duration
+
+        current_time = time.time()
+        interval_id = f"{int(current_time * 1000)}-{uuid.uuid4().hex[:20]}"
+        offset = await self._get_timezone_offset_minutes()
+        end_offset = await self._get_timezone_offset_minutes()
+        breast_interval = FirebaseBreastFeedIntervalData(
+            mode="breast",
+            start=start_timestamp,
+            lastSide=side,
+            lastUpdated=current_time,
+            leftDuration=resolved_left_duration,
+            rightDuration=resolved_right_duration,
+            offset=offset,
+            end_offset=end_offset,
+        )
+        last_nursing_data = FirebaseLastNursingData(
+            mode="breast",
+            start=start_timestamp,
+            duration=total_duration,
+            leftDuration=resolved_left_duration,
+            rightDuration=resolved_right_duration,
+            offset=offset,
+        )
+        last_side_data = FirebaseLastSideData(start=start_timestamp, lastSide=side)
+
+        client = await self._get_firestore_client()
+        feed_ref = client.collection("feed").document(child_uid)
+        feed_doc = await feed_ref.get()
+        feed_model = FirebaseFeedDocumentData.model_validate(feed_doc.to_dict() or {})
+        existing_last_nursing = feed_model.prefs.lastNursing if feed_model.prefs else None
+        existing_last_nursing_start = existing_last_nursing.start if existing_last_nursing else None
+        should_update_last_nursing = existing_last_nursing_start is None or start_timestamp >= float(
+            existing_last_nursing_start
+        )
+
+        await feed_ref.collection("intervals").document(interval_id).set(to_firebase_dict(breast_interval))
+
+        if should_update_last_nursing:
+            await feed_ref.set(
+                {
+                    "prefs": {
+                        "lastNursing": to_firebase_dict(last_nursing_data),
+                        "lastSide": to_firebase_dict(last_side_data),
+                        "timestamp": {"seconds": current_time},
+                        "local_timestamp": current_time,
+                    }
+                },
+                merge=True,
+            )
+
+        _LOGGER.info("Nursing logged for child %s (updated_last=%s)", child_uid, should_update_last_nursing)
+
     async def log_bottle(
         self,
         child_uid: str,
+        *,
+        start_time: datetime,
         amount: float,
         bottle_type: BottleType = "Formula",
         units: VolumeUnits = "ml",
@@ -972,6 +1114,7 @@ class HuckleberryAPI:
 
         Args:
             child_uid: Child unique identifier
+            start_time: Event time
             bottle_type: Type of bottle contents ("Breast Milk", "Formula", "Cow Milk", etc.)
             amount: Amount fed in specified units
             units: Volume units ("ml" or "oz")
@@ -981,19 +1124,28 @@ class HuckleberryAPI:
         client = await self._get_firestore_client()
         feed_ref = client.collection("feed").document(child_uid)
 
-        now_time = time.time()
-        interval_id = f"{int(now_time * 1000)}-{uuid.uuid4().hex[:20]}"
+        start_timestamp = start_time.timestamp()
+        current_time = time.time()
+        interval_id = f"{int(current_time * 1000)}-{uuid.uuid4().hex[:20]}"
+        offset = await self._get_timezone_offset_minutes()
+        feed_doc = await feed_ref.get()
+        feed_model = FirebaseFeedDocumentData.model_validate(feed_doc.to_dict() or {})
+        existing_last_bottle = feed_model.prefs.lastBottle if feed_model.prefs else None
+        existing_last_bottle_start = existing_last_bottle.start if existing_last_bottle else None
+        should_update_last_bottle = existing_last_bottle_start is None or start_timestamp >= float(
+            existing_last_bottle_start
+        )
 
         # Create interval document for bottle feeding
         bottle_entry = FirebaseBottleFeedIntervalData(
             mode="bottle",
-            start=now_time,
-            lastUpdated=now_time,
+            start=start_timestamp,
+            lastUpdated=current_time,
             bottleType=bottle_type,
             amount=amount,
             units=units,
-            offset=await self._get_timezone_offset_minutes(),
-            end_offset=await self._get_timezone_offset_minutes(),
+            offset=offset,
+            end_offset=offset,
         )
 
         # Create interval document
@@ -1009,28 +1161,35 @@ class HuckleberryAPI:
         # Update prefs.lastBottle and document-level bottle preferences
         last_bottle_data = FirebaseLastBottleData(
             mode="bottle",
-            start=now_time,
+            start=start_timestamp,
             bottleType=bottle_type,
             bottleAmount=amount,
             bottleUnits=units,
-            offset=await self._get_timezone_offset_minutes(),
+            offset=offset,
         )
 
-        await feed_ref.set(
-            {
-                "prefs": {
-                    "lastBottle": to_firebase_dict(last_bottle_data),
-                    "bottleType": bottle_type,  # Update defaults
-                    "bottleAmount": amount,
-                    "bottleUnits": units,
-                    "timestamp": {"seconds": now_time},
-                    "local_timestamp": now_time,
-                }
-            },
-            merge=True,
-        )
+        if should_update_last_bottle:
+            await feed_ref.set(
+                {
+                    "prefs": {
+                        "lastBottle": to_firebase_dict(last_bottle_data),
+                        "bottleType": bottle_type,
+                        "bottleAmount": amount,
+                        "bottleUnits": units,
+                        "timestamp": {"seconds": current_time},
+                        "local_timestamp": current_time,
+                    }
+                },
+                merge=True,
+            )
 
-        _LOGGER.info("Bottle feeding logged: %s %s of %s", amount, units, bottle_type)
+        _LOGGER.info(
+            "Bottle feeding logged: %s %s of %s (updated_last=%s)",
+            amount,
+            units,
+            bottle_type,
+            should_update_last_bottle,
+        )
 
     async def list_solids_curated_foods(self) -> list[FirebaseCuratedFoodDocument]:
         """List curated solids foods from Firebase Storage."""
@@ -1109,7 +1268,8 @@ class HuckleberryAPI:
 
         client = await self._get_firestore_client()
         types_ref = client.collection("types").document(child_uid)
-        await types_ref.set({"available_types": {"solids": True}}, merge=True)
+        types_document = FirebaseTypesDocument(available_types=FirebaseTypesAvailableTypes(solids=True))
+        await types_ref.set(to_firebase_dict(types_document), merge=True)
         await types_ref.collection("custom").document(food_id).set(to_firebase_dict(custom_food))
 
         return custom_food
@@ -1117,6 +1277,8 @@ class HuckleberryAPI:
     async def log_solids(
         self,
         child_uid: str,
+        *,
+        start_time: datetime,
         foods: list[SolidsFoodReference],
         notes: str = "",
         reaction: SolidsReaction | None = None,
@@ -1126,6 +1288,7 @@ class HuckleberryAPI:
 
         Args:
             child_uid: Child unique identifier
+            start_time: Event time
             foods: Existing food references with explicit id/source/name/amount
             notes: Optional notes about the meal
             reaction: Optional reaction - "LOVED", "MEH", "HATED", or "ALLERGIC"
@@ -1139,8 +1302,17 @@ class HuckleberryAPI:
         client = await self._get_firestore_client()
         feed_ref = client.collection("feed").document(child_uid)
 
-        now_time = time.time()
-        interval_id = f"{int(now_time * 1000)}-{uuid.uuid4().hex[:20]}"
+        start_timestamp = start_time.timestamp()
+        current_time = time.time()
+        interval_id = f"{int(current_time * 1000)}-{uuid.uuid4().hex[:20]}"
+        offset = await self._get_timezone_offset_minutes()
+        feed_doc = await feed_ref.get()
+        feed_model = FirebaseFeedDocumentData.model_validate(feed_doc.to_dict() or {})
+        existing_last_solid = feed_model.prefs.lastSolid if feed_model.prefs else None
+        existing_last_solid_start = existing_last_solid.start if existing_last_solid else None
+        should_update_last_solid = existing_last_solid_start is None or start_timestamp >= float(
+            existing_last_solid_start
+        )
 
         foods_dict: dict[str, SolidsFoodEntry] = {}
         for food_item in foods:
@@ -1163,9 +1335,9 @@ class HuckleberryAPI:
 
         entry = FirebaseSolidsFeedIntervalData(
             mode="solids",
-            start=now_time,
-            lastUpdated=now_time,
-            offset=await self._get_timezone_offset_minutes(),
+            start=start_timestamp,
+            lastUpdated=current_time,
+            offset=offset,
             foods=foods_dict,
         )
 
@@ -1180,22 +1352,26 @@ class HuckleberryAPI:
 
         last_solid = FirebaseLastSolidData(
             mode="solids",
-            start=now_time,
+            start=start_timestamp,
             foods=foods_dict,
             reactions={reaction: True} if reaction else None,
             notes=notes if notes else None,
-            offset=await self._get_timezone_offset_minutes(),
+            offset=offset,
         )
 
-        await feed_ref.update(
-            {
-                "prefs.lastSolid": to_firebase_dict(last_solid),
-                "prefs.timestamp": {"seconds": now_time},
-                "prefs.local_timestamp": now_time,
-            }
-        )
+        if should_update_last_solid:
+            await feed_ref.set(
+                {
+                    "prefs": {
+                        "lastSolid": to_firebase_dict(last_solid),
+                        "timestamp": {"seconds": current_time},
+                        "local_timestamp": current_time,
+                    }
+                },
+                merge=True,
+            )
 
-        _LOGGER.info("Solids logged with %d references", len(foods_dict))
+        _LOGGER.info("Solids logged with %d references (updated_last=%s)", len(foods_dict), should_update_last_solid)
 
     async def _setup_listener(
         self,
@@ -1308,6 +1484,7 @@ class HuckleberryAPI:
         child_uid: str,
         mode: DiaperMode,
         *,
+        start_time: datetime,
         pref_field: Literal["lastDiaper", "lastPotty"],
         pee_amount: Literal["little", "medium", "big"] | None = None,
         poo_amount: Literal["little", "medium", "big"] | None = None,
@@ -1325,8 +1502,16 @@ class HuckleberryAPI:
         client = await self._get_firestore_client()
         diaper_ref = client.collection("diaper").document(child_uid)
 
+        start_timestamp = start_time.timestamp()
         current_time = time.time()
         current_offset = await self._get_timezone_offset_minutes()
+        diaper_doc = await diaper_ref.get()
+        diaper_model = FirebaseDiaperDocumentData.model_validate(diaper_doc.to_dict() or {})
+        existing_last_event = getattr(diaper_model.prefs, pref_field, None) if diaper_model.prefs else None
+        existing_last_event_start = existing_last_event.start if existing_last_event else None
+        should_update_last_event = existing_last_event_start is None or start_timestamp >= float(
+            existing_last_event_start
+        )
 
         # Create interval ID (timestamp in ms + random suffix)
         interval_timestamp_ms = int(current_time * 1000)
@@ -1334,7 +1519,7 @@ class HuckleberryAPI:
 
         # Build interval data (matching app behavior - minimal fields by default)
         interval_data = FirebaseDiaperData(
-            start=current_time,
+            start=start_timestamp,
             lastUpdated=current_time,
             mode=mode,
             offset=current_offset,
@@ -1377,35 +1562,43 @@ class HuckleberryAPI:
         prefs_entry: FirebaseLastDiaperData | FirebaseLastPottyData
         if pref_field == "lastDiaper":
             prefs_entry = FirebaseLastDiaperData(
-                start=current_time,
+                start=start_timestamp,
                 mode=mode,
                 offset=current_offset,
             )
         else:
             prefs_entry = FirebaseLastPottyData(
-                start=current_time,
+                start=start_timestamp,
                 mode=mode,
                 offset=current_offset,
             )
 
-        try:
-            await diaper_ref.update(
-                {
-                    f"prefs.{pref_field}": to_firebase_dict(prefs_entry),
-                    "prefs.timestamp": {"seconds": current_time},
-                    "prefs.local_timestamp": current_time,
-                }
-            )
-            _LOGGER.info("Updated %s prefs", pref_field)
-        except GoogleAPICallError as err:
-            _LOGGER.error("Failed to update %s prefs: %s", pref_field, err)
-            raise
+        if should_update_last_event:
+            try:
+                await diaper_ref.set(
+                    {
+                        "prefs": {
+                            pref_field: to_firebase_dict(prefs_entry),
+                            "timestamp": {"seconds": current_time},
+                            "local_timestamp": current_time,
+                        }
+                    },
+                    merge=True,
+                )
+                _LOGGER.info("Updated %s prefs", pref_field)
+            except GoogleAPICallError as err:
+                _LOGGER.error("Failed to update %s prefs: %s", pref_field, err)
+                raise
 
-        _LOGGER.info("%s event logged successfully", event_kind.capitalize())
+        _LOGGER.info(
+            "%s event logged successfully (updated_last=%s)", event_kind.capitalize(), should_update_last_event
+        )
 
     async def log_diaper(
         self,
         child_uid: str,
+        *,
+        start_time: datetime,
         mode: DiaperMode,
         pee_amount: Literal["little", "medium", "big"] | None = None,
         poo_amount: Literal["little", "medium", "big"] | None = None,
@@ -1419,6 +1612,7 @@ class HuckleberryAPI:
 
         Args:
             child_uid: Child unique identifier
+            start_time: Event time
             mode: One of 'pee', 'poo', 'both', 'dry'
             pee_amount: Pee amount - 'little', 'medium', 'big', or None (no quantity)
             poo_amount: Poo amount - 'little', 'medium', 'big', or None (no quantity)
@@ -1437,11 +1631,14 @@ class HuckleberryAPI:
             consistency=consistency,
             diaper_rash=diaper_rash,
             notes=notes,
+            start_time=start_time,
         )
 
     async def log_potty(
         self,
         child_uid: str,
+        *,
+        start_time: datetime,
         mode: DiaperMode,
         how_it_happened: PottyResult,
         pee_amount: Literal["little", "medium", "big"] | None = None,
@@ -1454,6 +1651,7 @@ class HuckleberryAPI:
 
         Args:
             child_uid: Child unique identifier
+            start_time: Event time
             mode: One of 'pee', 'poo', 'both', 'dry'
             how_it_happened: One of 'satButDry', 'wentPotty', or 'accident'
             pee_amount: Pee amount - 'little', 'medium', 'big', or None (no quantity)
@@ -1473,11 +1671,14 @@ class HuckleberryAPI:
             notes=notes,
             is_potty=True,
             how_it_happened=how_it_happened,
+            start_time=start_time,
         )
 
     async def log_growth(
         self,
         child_uid: str,
+        *,
+        start_time: datetime,
         weight: float | None = None,
         height: float | None = None,
         head: float | None = None,
@@ -1488,6 +1689,7 @@ class HuckleberryAPI:
 
         Args:
             child_uid: Child unique identifier
+            start_time: Event time
             weight: Weight measurement (kg for metric, lbs for imperial)
             height: Height measurement (cm for metric, inches for imperial)
             head: Head circumference (cm for metric, inches for imperial)
@@ -1501,7 +1703,16 @@ class HuckleberryAPI:
         client = await self._get_firestore_client()
         health_ref = client.collection("health").document(child_uid)
 
+        start_timestamp = start_time.timestamp()
         current_time = time.time()
+        current_offset = await self._get_timezone_offset_minutes()
+        health_doc = await health_ref.get()
+        health_model = FirebaseHealthDocumentData.model_validate(health_doc.to_dict() or {})
+        existing_last_growth = health_model.prefs.lastGrowthEntry if health_model.prefs else None
+        existing_last_growth_start = existing_last_growth.start if existing_last_growth else None
+        should_update_last_growth = existing_last_growth_start is None or start_timestamp >= float(
+            existing_last_growth_start
+        )
 
         # Create interval ID (timestamp in ms + random suffix)
         interval_timestamp_ms = int(current_time * 1000)
@@ -1512,9 +1723,9 @@ class HuckleberryAPI:
             id_=interval_id,
             type="health",
             mode="growth",
-            start=current_time,
+            start=start_timestamp,
             lastUpdated=current_time,
-            offset=await self._get_timezone_offset_minutes(),
+            offset=current_offset,
             isNight=False,
             multientry_key=None,
         )
@@ -1553,18 +1764,20 @@ class HuckleberryAPI:
             # Continue to update prefs even if subcollection write fails
 
         # Update prefs.lastGrowthEntry and timestamps (matches Huckleberry app structure)
-        try:
-            await health_ref.update(
-                {
-                    "prefs.lastGrowthEntry": to_firebase_dict(growth_entry),
-                    "prefs.timestamp": {"seconds": current_time},
-                    "prefs.local_timestamp": current_time,
-                }
-            )
-            _LOGGER.info("Growth data logged successfully")
-        except GoogleAPICallError as err:
-            _LOGGER.error("Failed to log growth data: %s", err)
-            raise
+        if should_update_last_growth:
+            try:
+                await health_ref.update(
+                    {
+                        "prefs.lastGrowthEntry": to_firebase_dict(growth_entry),
+                        "prefs.timestamp": {"seconds": current_time},
+                        "prefs.local_timestamp": current_time,
+                    }
+                )
+            except GoogleAPICallError as err:
+                _LOGGER.error("Failed to log growth data: %s", err)
+                raise
+
+        _LOGGER.info("Growth data logged successfully (updated_last=%s)", should_update_last_growth)
 
     async def log_pump(
         self,
@@ -1612,6 +1825,9 @@ class HuckleberryAPI:
 
         start_timestamp = start_time.timestamp()
         current_offset = await self._get_timezone_offset_minutes()
+        end_offset = None
+        if duration is not None:
+            end_offset = await self._get_timezone_offset_minutes()
 
         current_time = time.time()
         interval_id = f"{int(current_time * 1000)}-{uuid.uuid4().hex[:20]}"
@@ -1623,7 +1839,7 @@ class HuckleberryAPI:
             units=units,
             offset=current_offset,
             duration=float(duration) if duration is not None else None,
-            end_offset=current_offset if duration is not None else None,
+            end_offset=end_offset,
             lastUpdated=current_time,
             notes=notes,
         )
@@ -1689,6 +1905,9 @@ class HuckleberryAPI:
 
         start_timestamp = start_time.timestamp()
         current_offset = await self._get_timezone_offset_minutes()
+        end_offset = None
+        if duration is not None:
+            end_offset = await self._get_timezone_offset_minutes()
         current_time = time.time()
         interval_id = f"{int(current_time * 1000)}-{uuid.uuid4().hex[:20]}"
 
@@ -1697,7 +1916,7 @@ class HuckleberryAPI:
             start=start_timestamp,
             offset=current_offset,
             duration=float(duration) if duration is not None else None,
-            end_offset=current_offset if duration is not None else None,
+            end_offset=end_offset,
             lastUpdated=current_time,
             notes=notes,
         )
@@ -1706,7 +1925,7 @@ class HuckleberryAPI:
             start=start_timestamp,
             offset=current_offset,
             duration=float(duration) if duration is not None else None,
-            end_offset=current_offset if duration is not None else None,
+            end_offset=end_offset,
         )
 
         client = await self._get_firestore_client()

@@ -33,6 +33,7 @@ pip install huckleberry-api
 import asyncio
 from datetime import datetime
 import aiohttp
+from datetime import datetime, timedelta
 
 from huckleberry_api import HuckleberryAPI
 
@@ -52,28 +53,53 @@ async def main() -> None:
 
         await api.start_sleep(child_uid)
         await api.complete_sleep(child_uid)
+        await api.log_sleep(
+            child_uid,
+            start_time=datetime.now() - timedelta(hours=3),
+            end_time=datetime.now() - timedelta(hours=2),
+        )
 
         await api.start_nursing(child_uid, side="left")
         await api.switch_nursing_side(child_uid)
         await api.complete_nursing(child_uid)
+        await api.log_nursing(
+            child_uid,
+            start_time=datetime.now() - timedelta(hours=4),
+            end_time=datetime.now() - timedelta(hours=3, minutes=30),
+            side="right",
+        )
 
-        await api.log_bottle(child_uid, amount=120.0, bottle_type="Formula", units="ml")
+        await api.log_bottle(
+            child_uid,
+            start_time=datetime.now() - timedelta(hours=1),
+            amount=120.0,
+            bottle_type="Formula",
+            units="ml",
+        )
         await api.log_pump(
-          child_uid,
-          start_time=datetime.now(),
-          total_amount=120.0,
-          duration=900,
-          units="ml",
+            child_uid,
+            start_time=datetime.now(),
+            total_amount=120.0,
+            duration=900,
+            units="ml",
         )
         await api.log_diaper(
             child_uid,
+            start_time=datetime.now() - timedelta(minutes=45),
             mode="both",
             pee_amount="medium",
             poo_amount="medium",
             color="yellow",
             consistency="solid",
         )
-        await api.log_growth(child_uid, weight=5.2, height=52.0, head=35.0, units="metric")
+        await api.log_growth(
+            child_uid,
+            start_time=datetime.now() - timedelta(days=1),
+            weight=5.2,
+            height=52.0,
+            head=35.0,
+            units="metric",
+        )
 
 
 asyncio.run(main())
@@ -85,6 +111,7 @@ Set up real-time listeners for instant updates:
 
 ```python
 import aiohttp
+from datetime import datetime, timedelta
 
 def on_sleep_update(data):
     timer = data.get("timer", {})
@@ -124,6 +151,7 @@ async def main() -> None:
 - `await resume_sleep(child_uid)` - Resume paused session
 - `await cancel_sleep(child_uid)` - Cancel without saving
 - `await complete_sleep(child_uid)` - Complete and save to history
+- `await log_sleep(child_uid, start_time=..., end_time=..., details=None)` - Log a completed sleep interval with explicit timestamps
 
 ### Feeding Tracking
 - `await start_nursing(child_uid, side)` - Start breastfeeding session
@@ -132,7 +160,8 @@ async def main() -> None:
 - `await switch_nursing_side(child_uid)` - Switch left/right
 - `await cancel_nursing(child_uid)` - Cancel without saving
 - `await complete_nursing(child_uid)` - Complete and save to history
-- `await log_bottle(child_uid, amount, bottle_type, units)` - Log bottle feeding
+- `await log_nursing(child_uid, start_time=..., end_time=..., side="left")` - Log a completed breastfeeding interval with explicit timestamps
+- `await log_bottle(child_uid, start_time=..., amount=..., bottle_type=..., units=...)` - Log bottle feeding with an explicit event timestamp
   - `bottle_type`: "Breast Milk", "Formula", "Cow Milk", "Soy Milk", etc.
   - `amount`: Volume fed (e.g., 120.0)
   - `units`: "ml" or "oz"
@@ -145,16 +174,17 @@ async def main() -> None:
 - `await list_solids_curated_foods()` - List curated solids food catalog
 - `await list_solids_custom_foods(child_uid, include_archived=False)` - List custom solids foods
 - `await create_solids_custom_food(child_uid, name, image="")` - Create custom solids food
-- `await log_solids(child_uid, foods, notes="", reaction=None, food_note_image=None)` - Log solids meal
+- `await log_solids(child_uid, start_time=..., foods=..., notes="", reaction=None, food_note_image=None)` - Log solids meal with an explicit event timestamp
 
 ### Diaper Tracking
-- `await log_diaper(child_uid, mode, pee_amount, poo_amount, color, consistency)` - Log diaper change
+- `await log_diaper(child_uid, start_time=..., mode=..., pee_amount=..., poo_amount=..., color=..., consistency=...)` - Log diaper change with an explicit event timestamp
+- `await log_potty(child_uid, start_time=..., mode=..., how_it_happened=..., pee_amount=..., poo_amount=..., color=..., consistency=...)` - Log potty event with an explicit event timestamp
   - `mode`: "pee", "poo", "both", or "dry"
   - `color`: "yellow", "green", "brown", "black", "red"
   - `consistency`: "runny", "soft", "solid", "hard"
 
 ### Growth Tracking
-- `await log_growth(child_uid, weight, height, head, units)` - Log measurements
+- `await log_growth(child_uid, start_time=..., weight=..., height=..., head=..., units=...)` - Log measurements with an explicit event timestamp
   - `units`: "metric" (kg/cm) or "imperial" (lbs/inches)
 - `await get_latest_growth(child_uid)` - Get latest measurements
 

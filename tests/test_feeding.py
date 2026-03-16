@@ -1,6 +1,8 @@
 """Feeding tracking tests for Huckleberry API."""
 
 import asyncio
+import time
+from datetime import datetime, timedelta, timezone
 
 from google.cloud import firestore
 
@@ -123,6 +125,7 @@ class TestFeedingTracking:
     async def test_complete_feeding_creates_interval(self, api: HuckleberryAPI, child_uid: str) -> None:
         """Test that completing feeding creates interval document."""
         # Start and complete nursing
+        created_after = time.time()
         await api.start_nursing(child_uid, side="left")
         await asyncio.sleep(3)
         await api.complete_nursing(child_uid)
@@ -133,14 +136,43 @@ class TestFeedingTracking:
         # Check intervals subcollection
         intervals_ref = db.collection("feed").document(child_uid).collection("intervals")
 
-        # Get most recent interval
-        recent_intervals = intervals_ref.order_by("start", direction=firestore.Query.DESCENDING).limit(1)
+        recent_intervals = intervals_ref.order_by("lastUpdated", direction=firestore.Query.DESCENDING).limit(10)
 
         intervals_list = list(await recent_intervals.get())
         assert len(intervals_list) > 0
 
-        interval_data = intervals_list[0].to_dict()
+        interval_data = next(
+            (
+                data
+                for doc in intervals_list
+                if (data := doc.to_dict())
+                and data.get("mode") == "breast"
+                and float(data.get("lastUpdated", 0.0)) >= created_after
+            ),
+            None,
+        )
         assert interval_data is not None
         assert "start" in interval_data
         assert "mode" in interval_data
         assert interval_data["mode"] == "breast"
+
+    async def test_log_nursing_with_explicit_times(self, api: HuckleberryAPI, child_uid: str) -> None:
+        """Test logging a completed nursing interval with explicit timestamps."""
+        end_time = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(hours=3)
+        start_time = end_time - timedelta(minutes=40)
+
+        await api.log_nursing(child_uid, start_time=start_time, end_time=end_time, side="right")
+        await asyncio.sleep(1)
+
+        db = await api._get_firestore_client()
+        intervals_ref = db.collection("feed").document(child_uid).collection("intervals")
+        matching = list(
+            await intervals_ref.where(filter=firestore.FieldFilter("start", "==", start_time.timestamp())).get()
+        )
+
+        breast_entries = [doc.to_dict() for doc in matching if (doc.to_dict() or {}).get("mode") == "breast"]
+        assert breast_entries
+        interval_data = breast_entries[0]
+        assert interval_data is not None
+        assert interval_data["lastSide"] == "right"
+        assert interval_data["rightDuration"] == (end_time - start_time).total_seconds()
