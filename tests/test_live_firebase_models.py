@@ -18,8 +18,11 @@ from google.cloud import firestore
 from huckleberry_api import HuckleberryAPI
 from huckleberry_api.api import CURATED_FOODS_BUCKET, CURATED_FOODS_OBJECT
 from huckleberry_api.firebase_types import (
+    FirebaseActivityDocumentData,
     FirebaseActivityIntervalData,
     FirebaseActivityMultiContainer,
+    FirebaseActivityPrefs,
+    FirebaseActivityTimerData,
     FirebaseBottleFeedIntervalData,
     FirebaseChildDocument,
     FirebaseCuratedFoodDocument,
@@ -299,6 +302,19 @@ async def test_live_latest_health_pump_activities_and_foods(api: HuckleberryAPI)
                     FirebasePumpIntervalData.model_validate(entry.model_dump(by_alias=True, exclude_none=True))
             else:
                 FirebasePumpIntervalData.model_validate(payload)
+
+        activities_doc = await db.collection("activities").document(child_uid).get()
+        activities_payload = _doc_to_dict(activities_doc)
+        if activities_payload:
+            FirebaseActivityDocumentData.model_validate(activities_payload)
+
+            activities_prefs_payload = _as_obj_dict(activities_payload.get("prefs"))
+            if activities_prefs_payload:
+                FirebaseActivityPrefs.model_validate(activities_prefs_payload)
+
+            activities_timer_payload = _as_obj_dict(activities_payload.get("timer"))
+            if activities_timer_payload:
+                FirebaseActivityTimerData.model_validate(activities_timer_payload)
 
         activities_ref = db.collection("activities").document(child_uid).collection("intervals")
         async for doc in _iter_latest_by_doc_id(activities_ref, _max_docs()):

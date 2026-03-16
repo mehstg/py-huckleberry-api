@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from huckleberry_api import HuckleberryAPI
-from huckleberry_api.firebase_types import FirebasePumpDocumentData
+from huckleberry_api.firebase_types import FirebaseActivityDocumentData, FirebasePumpDocumentData
 from huckleberry_api.models import SolidsFoodReference
 
 
@@ -275,3 +275,38 @@ class TestRealtimeListeners:
         assert last_update.prefs.lastPump is not None
         assert last_update.prefs.lastPump.duration == 900.0
         assert last_update.prefs.lastPump.entryMode == "total"
+
+    async def test_activity_listener(self, api: HuckleberryAPI, child_uid: str) -> None:
+        """Test activities real-time listener."""
+        updates: list[Any] = []
+        minimum_start = time.time()
+        db = await api._get_firestore_client()
+        activity_doc = await db.collection("activities").document(child_uid).get()
+        activity_data = activity_doc.to_dict() or {}
+        activity_model = FirebaseActivityDocumentData.model_validate(activity_data)
+        latest_bath = activity_model.prefs.lastBath if activity_model.prefs else None
+        if latest_bath is not None and latest_bath.start is not None:
+            minimum_start = max(minimum_start, float(latest_bath.start) + 60.0)
+
+        def callback(data: Any) -> None:
+            updates.append(data)
+
+        await api.setup_activity_listener(child_uid, callback)
+        await asyncio.sleep(2)
+
+        await api.log_activity(
+            child_uid,
+            mode="bath",
+            start_time=datetime.fromtimestamp(minimum_start, tz=timezone.utc),
+            duration=900,
+            notes="activity listener test",
+        )
+        await asyncio.sleep(2)
+
+        await api.stop_all_listeners()
+
+        assert len(updates) > 0
+        last_update = updates[-1]
+        assert last_update.prefs is not None
+        assert last_update.prefs.lastBath is not None
+        assert last_update.prefs.lastBath.duration == 900.0

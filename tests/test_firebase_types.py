@@ -1,15 +1,23 @@
 """Unit tests for strict Firebase schema models."""
 
 from huckleberry_api.firebase_types import (
-    FirebaseGrowthData,
+    FirebaseActivityDocumentData,
+    FirebaseActivityIntervalData,
+    FirebaseActivityMultiContainer,
+    FirebaseActivityPrefs,
+    FirebaseActivityTimerData,
+    FirebaseActivityTimerEntryData,
     FirebaseDiaperDocumentData,
     FirebaseFeedDocumentData,
-    FirebaseSleepDocumentData,
+    FirebaseGrowthData,
+    FirebaseLastActivityData,
+    FirebaseLastPumpData,
+    FirebaseMedicationData,
     FirebasePumpDocumentData,
     FirebasePumpIntervalData,
-    FirebasePumpPrefs,
     FirebasePumpMultiContainer,
-    FirebaseLastPumpData,
+    FirebasePumpPrefs,
+    FirebaseSleepDocumentData,
 )
 
 
@@ -108,6 +116,25 @@ def test_growth_model_accepts_sparse_live_app_data_rows() -> None:
     assert model.isNight is None
     assert model.weightUnits == "kg"
     assert model.heightUnits == "cm"
+
+
+def test_medication_model_accepts_live_app_ounce_units() -> None:
+    """Medication schema should accept the live app's oz unit option."""
+    model = FirebaseMedicationData.model_validate(
+        {
+            "type": "health",
+            "mode": "medication",
+            "start": 1773641000.0,
+            "lastUpdated": 1773641001.0,
+            "offset": 0.0,
+            "medication_id": "abc123",
+            "medication_name": "Vitamin D",
+            "amount": 2.0,
+            "units": "oz",
+        }
+    )
+
+    assert model.units == "oz"
 
 
 def test_pump_interval_model() -> None:
@@ -278,3 +305,149 @@ def test_pump_multi_container_model() -> None:
     assert "interval2" in model.data
     assert model.data["interval2"].leftAmount == 1.55
     assert model.data["interval2"].rightAmount == 1.55
+
+
+def test_activity_interval_model_with_notes() -> None:
+    """Activity interval schema should accept verified live notes payloads."""
+    model = FirebaseActivityIntervalData.model_validate(
+        {
+            "mode": "bath",
+            "start": 1773638859.763,
+            "offset": -120.0,
+            "duration": 1020.0,
+            "end_offset": -120.0,
+            "lastUpdated": 1773638865.955,
+            "notes": "j",
+        }
+    )
+
+    assert model.mode == "bath"
+    assert model.duration == 1020.0
+    assert model.notes == "j"
+
+
+def test_last_activity_data_model() -> None:
+    """Activity prefs summary schema should match verified live payloads."""
+    model = FirebaseLastActivityData.model_validate(
+        {
+            "start": 1773638810.595,
+            "offset": -120.0,
+            "duration": 1200.0,
+            "end_offset": -120.0,
+        }
+    )
+
+    assert model.start == 1773638810.595
+    assert model.offset == -120.0
+    assert model.duration == 1200.0
+    assert model.end_offset == -120.0
+
+
+def test_activity_timer_entry_model() -> None:
+    """Per-mode activity timer schema should accept verified live timer payloads."""
+    model = FirebaseActivityTimerEntryData.model_validate(
+        {
+            "active": True,
+            "paused": False,
+            "timestamp": {"seconds": 1773638888.092},
+            "local_timestamp": 1773638888.092,
+            "startTime": 1773638888090.0,
+            "endTime": 1772998750620.0,
+            "duration": 0.0,
+            "notes": "",
+            "uuid": "dca86f2ba764cf06",
+        }
+    )
+
+    assert model.active is True
+    assert model.endTime == 1772998750620.0
+    assert model.uuid == "dca86f2ba764cf06"
+
+
+def test_activity_prefs_and_document_model() -> None:
+    """Activity root document schema should validate verified prefs and timer maps."""
+    prefs = FirebaseActivityPrefs.model_validate(
+        {
+            "lastBath": {
+                "start": 1773638859.763,
+                "offset": -120.0,
+                "duration": 1020.0,
+                "end_offset": -120.0,
+            },
+            "lastStoryTime": {
+                "start": 1773638797.005,
+                "offset": -120.0,
+            },
+            "timestamp": {"seconds": 1773638865.953},
+            "local_timestamp": 1773638865.953,
+        }
+    )
+    timer = FirebaseActivityTimerData.model_validate(
+        {
+            "bath": {
+                "active": True,
+                "paused": False,
+                "timestamp": {"seconds": 1773638888.092},
+                "local_timestamp": 1773638888.092,
+                "startTime": 1773638888090.0,
+                "endTime": 1772998750620.0,
+                "duration": 0.0,
+                "notes": "",
+                "uuid": "dca86f2ba764cf06",
+            },
+            "storyTime": {
+                "active": False,
+                "paused": False,
+                "timestamp": {"seconds": 1773638800.647},
+                "local_timestamp": 1773638800.647,
+                "startTime": 1773638800647.0,
+                "duration": 0.0,
+                "notes": "",
+                "uuid": "dca86f2ba764cf06",
+            },
+        }
+    )
+    document = FirebaseActivityDocumentData.model_validate(
+        {
+            "prefs": prefs.model_dump(by_alias=True, exclude_none=True),
+            "timer": timer.model_dump(by_alias=True, exclude_none=True),
+        }
+    )
+
+    assert document.prefs is not None
+    assert document.prefs.lastBath is not None
+    assert document.prefs.lastBath.duration == 1020.0
+    assert document.timer is not None
+    assert document.timer.bath is not None
+    assert document.timer.bath.active is True
+    assert document.timer.storyTime is not None
+    assert document.timer.storyTime.active is False
+
+
+def test_activity_multi_container_model() -> None:
+    """Activity multi-container schema should validate batched interval docs."""
+    model = FirebaseActivityMultiContainer.model_validate(
+        {
+            "multi": True,
+            "hasMoreRoom": False,
+            "data": {
+                "interval1": {
+                    "mode": "bath",
+                    "start": 1773638859.763,
+                    "offset": -120.0,
+                    "duration": 1020.0,
+                    "end_offset": -120.0,
+                },
+                "interval2": {
+                    "mode": "storyTime",
+                    "start": 1773638797.005,
+                    "offset": -120.0,
+                },
+            },
+        }
+    )
+
+    assert model.multi is True
+    assert len(model.data) == 2
+    assert model.data["interval1"].mode == "bath"
+    assert model.data["interval2"].mode == "storyTime"

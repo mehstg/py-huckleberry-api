@@ -1,10 +1,11 @@
 """Calendar/interval fetching tests for Huckleberry API."""
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from huckleberry_api import HuckleberryAPI
 from huckleberry_api.firebase_types import (
+    FirebaseActivityIntervalData,
     FirebaseBottleFeedIntervalData,
     FirebaseBreastFeedIntervalData,
     FirebaseGrowthData,
@@ -27,10 +28,10 @@ class TestCalendarIntervals:
 
         # Query for intervals in the last hour
         now = datetime.now(timezone.utc)
-        start_ts = int(now.timestamp()) - 3600  # 1 hour ago
-        end_ts = int(now.timestamp()) + 60  # 1 minute in future
+        start_time = now.replace(microsecond=0) - timedelta(hours=1)
+        end_time = now.replace(microsecond=0) + timedelta(minutes=1)
 
-        intervals = await api.list_sleep_intervals(child_uid, start_ts, end_ts)
+        intervals = await api.list_sleep_intervals(child_uid, start_time, end_time)
 
         assert isinstance(intervals, list)
         # Should have at least the interval we just created
@@ -51,10 +52,10 @@ class TestCalendarIntervals:
 
         # Query for intervals in the last hour
         now = datetime.now(timezone.utc)
-        start_ts = int(now.timestamp()) - 3600
-        end_ts = int(now.timestamp()) + 60
+        start_time = now.replace(microsecond=0) - timedelta(hours=1)
+        end_time = now.replace(microsecond=0) + timedelta(minutes=1)
 
-        intervals = await api.list_feed_intervals(child_uid, start_ts, end_ts)
+        intervals = await api.list_feed_intervals(child_uid, start_time, end_time)
 
         assert isinstance(intervals, list)
         assert len(intervals) >= 1
@@ -78,10 +79,10 @@ class TestCalendarIntervals:
 
         # Query for intervals in the last hour
         now = datetime.now(timezone.utc)
-        start_ts = int(now.timestamp()) - 3600
-        end_ts = int(now.timestamp()) + 60
+        start_time = now.replace(microsecond=0) - timedelta(hours=1)
+        end_time = now.replace(microsecond=0) + timedelta(minutes=1)
 
-        intervals = await api.list_diaper_intervals(child_uid, start_ts, end_ts)
+        intervals = await api.list_diaper_intervals(child_uid, start_time, end_time)
 
         assert isinstance(intervals, list)
         assert len(intervals) >= 1
@@ -99,10 +100,10 @@ class TestCalendarIntervals:
 
         # Query for entries in the last hour
         now = datetime.now(timezone.utc)
-        start_ts = int(now.timestamp()) - 3600
-        end_ts = int(now.timestamp()) + 60
+        start_time = now.replace(microsecond=0) - timedelta(hours=1)
+        end_time = now.replace(microsecond=0) + timedelta(minutes=1)
 
-        entries = await api.list_health_entries(child_uid, start_ts, end_ts)
+        entries = await api.list_health_entries(child_uid, start_time, end_time)
 
         assert isinstance(entries, list)
         assert len(entries) >= 1
@@ -127,10 +128,10 @@ class TestCalendarIntervals:
         await asyncio.sleep(1)
 
         now = datetime.now(timezone.utc)
-        start_ts = int(now.timestamp()) - 3600
-        end_ts = int(now.timestamp()) + 60
+        start_time = now.replace(microsecond=0) - timedelta(hours=1)
+        end_time = now.replace(microsecond=0) + timedelta(minutes=1)
 
-        intervals = await api.list_pump_intervals(child_uid, start_ts, end_ts)
+        intervals = await api.list_pump_intervals(child_uid, start_time, end_time)
 
         assert isinstance(intervals, list)
         assert len(intervals) >= 1
@@ -141,11 +142,45 @@ class TestCalendarIntervals:
             assert interval.entryMode in ("leftright", "total")
             assert interval.units in ("ml", "oz")
 
+    async def test_list_activity_intervals(self, api: HuckleberryAPI, child_uid: str) -> None:
+        """Test fetching activity intervals for a date range."""
+        await api.log_activity(
+            child_uid,
+            mode="storyTime",
+            start_time=datetime.now(timezone.utc),
+            duration=600,
+            notes="calendar activity test",
+        )
+        await asyncio.sleep(1)
+
+        now = datetime.now(timezone.utc)
+        start_time = now.replace(microsecond=0) - timedelta(hours=1)
+        end_time = now.replace(microsecond=0) + timedelta(minutes=1)
+
+        intervals = await api.list_activity_intervals(child_uid, start_time, end_time)
+
+        assert isinstance(intervals, list)
+        assert len(intervals) >= 1
+
+        for interval in intervals:
+            assert isinstance(interval, FirebaseActivityIntervalData)
+            assert isinstance(interval.start, (int, float))
+            assert interval.mode in (
+                "bath",
+                "tummyTime",
+                "storyTime",
+                "screenTime",
+                "skinToSkin",
+                "outdoorPlay",
+                "indoorPlay",
+                "brushTeeth",
+            )
+
     async def test_date_range_filtering(self, api: HuckleberryAPI, child_uid: str) -> None:
         """Test that date range filtering works correctly."""
         # Query for a range far in the past (should return empty or fewer results)
-        old_start = 0  # Unix epoch
-        old_end = 1000000  # Jan 12, 1970
+        old_start = datetime.fromtimestamp(0, tz=timezone.utc)
+        old_end = datetime.fromtimestamp(1000000, tz=timezone.utc)
 
         intervals = await api.list_sleep_intervals(child_uid, old_start, old_end)
 
@@ -155,11 +190,11 @@ class TestCalendarIntervals:
 
     async def test_empty_date_range(self, api: HuckleberryAPI, child_uid: str) -> None:
         """Test querying with an empty date range."""
-        now = int(datetime.now(timezone.utc).timestamp())
+        now = datetime.now(timezone.utc).replace(microsecond=0)
 
         # Start equals end - empty range
         intervals = await api.list_sleep_intervals(child_uid, now, now)
 
         assert isinstance(intervals, list)
-        # Should return empty since start < end_timestamp won't match when they're equal
+        # Should return empty since the half-open range is empty when start and end are equal
         assert len(intervals) == 0

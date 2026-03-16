@@ -139,7 +139,7 @@ async def main() -> None:
 
 ### Pumping Tracking
 - `await log_pump(child_uid, start_time=..., total_amount=..., duration=..., units=...)` - Log pumping entry; total entries are stored split evenly across `leftAmount` and `rightAmount`
-- `await list_pump_intervals(child_uid, start_timestamp, end_timestamp)` - List pump history for a range
+- `await list_pump_intervals(child_uid, start_time, end_time)` - List pump history for a range using `datetime` objects
 
 ### Solids Tracking
 - `await list_solids_curated_foods()` - List curated solids food catalog

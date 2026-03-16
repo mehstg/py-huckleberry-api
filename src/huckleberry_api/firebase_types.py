@@ -43,7 +43,7 @@ SolidsReaction = Literal["LOVED", "MEH", "HATED", "ALLERGIC"]
 SolidsFoodSource = Literal["custom", "curated"]
 BottleType = Literal["Breast Milk", "Formula", "Tube Feeding", "Cow Milk", "Goat Milk", "Soy Milk", "Other"]
 VolumeUnits = Literal["ml", "oz"]
-MedicationUnits = Literal["ml", "cup", "tsp", "drops"]
+MedicationUnits = Literal["ml", "oz", "tsp", "drops"]
 TemperatureUnits = Literal["C", "F"]
 GenderType = Literal["M", "F", ""]
 WeightUnits = Literal["kg", "lbs.oz"]
@@ -844,6 +844,74 @@ class FirebasePumpMultiContainer(StrictModel):
 # ---------------------------------------------------------------------------
 
 
+class FirebaseLastActivityData(StrictModel):
+    """activities/{child_uid}.prefs.last* structure.
+
+    One summary field per activity mode under `prefs`, for
+    example `lastBath` and `lastStoryTime`.
+    """
+
+    start: Number | None = None
+    offset: Number | None = None
+    duration: Number | None = None
+    end_offset: Number | None = None
+
+
+class FirebaseActivityPrefs(StrictModel):
+    """activities/{child_uid}.prefs structure."""
+
+    lastBath: FirebaseLastActivityData | None = None
+    lastBrushTeeth: FirebaseLastActivityData | None = None
+    lastIndoorPlay: FirebaseLastActivityData | None = None
+    lastOutdoorPlay: FirebaseLastActivityData | None = None
+    lastScreenTime: FirebaseLastActivityData | None = None
+    lastSkinToSkin: FirebaseLastActivityData | None = None
+    lastStoryTime: FirebaseLastActivityData | None = None
+    lastTummyTime: FirebaseLastActivityData | None = None
+    timestamp: FirebaseTimestamp | None = None
+    local_timestamp: Number | None = None
+
+
+class FirebaseActivityTimerEntryData(StrictModel):
+    """Per-mode timer entry from activities/{child_uid}.timer.<mode>."""
+
+    active: bool
+    paused: bool | None = None
+    timestamp: FirebaseTimestamp | None = None
+    local_timestamp: Number | None = None
+    startTime: Number | None = Field(
+        default=None,
+        description="Observed activity timer field in milliseconds since epoch.",
+    )
+    endTime: Number | None = Field(
+        default=None,
+        description="Observed on live bath timer payloads in milliseconds since epoch.",
+    )
+    duration: Number | None = None
+    notes: str | None = None
+    uuid: str
+
+
+class FirebaseActivityTimerData(StrictModel):
+    """activities/{child_uid}.timer structure keyed by activity mode."""
+
+    bath: FirebaseActivityTimerEntryData | None = None
+    brushTeeth: FirebaseActivityTimerEntryData | None = None
+    indoorPlay: FirebaseActivityTimerEntryData | None = None
+    outdoorPlay: FirebaseActivityTimerEntryData | None = None
+    screenTime: FirebaseActivityTimerEntryData | None = None
+    skinToSkin: FirebaseActivityTimerEntryData | None = None
+    storyTime: FirebaseActivityTimerEntryData | None = None
+    tummyTime: FirebaseActivityTimerEntryData | None = None
+
+
+class FirebaseActivityDocumentData(StrictModel):
+    """activities/{child_uid} root document."""
+
+    timer: FirebaseActivityTimerData | None = None
+    prefs: FirebaseActivityPrefs | None = None
+
+
 class FirebaseActivityIntervalData(StrictModel):
     """activities/{child_uid}/intervals row.
 
@@ -856,6 +924,7 @@ class FirebaseActivityIntervalData(StrictModel):
     duration: Number | None = None
     end_offset: Number | None = None
     lastUpdated: Number | None = None
+    notes: str | None = None
 
 
 class FirebaseActivityMultiContainer(StrictModel):

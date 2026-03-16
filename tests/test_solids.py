@@ -2,6 +2,7 @@
 
 import asyncio
 import time
+from datetime import datetime, timedelta, timezone
 
 from google.cloud import firestore
 
@@ -131,10 +132,10 @@ class TestSolidsFeeding:
         )
         await asyncio.sleep(2)
 
-        end_ts = int(time.time()) + 60
-        start_ts = end_ts - 300
+        end_time = datetime.fromtimestamp(time.time() + 60, tz=timezone.utc)
+        start_time = end_time - timedelta(minutes=5)
 
-        entries = await api.list_feed_intervals(child_uid, start_ts, end_ts)
+        entries = await api.list_feed_intervals(child_uid, start_time, end_time)
         solids_entries = [entry for entry in entries if isinstance(entry, FirebaseSolidsFeedIntervalData)]
         assert len(solids_entries) > 0
         assert solids_entries[-1].foods is not None
@@ -148,8 +149,8 @@ class TestSolidsFeeding:
         )
         await asyncio.sleep(2)
 
-        end_ts = int(time.time()) + 60
-        start_ts = end_ts - 300
+        end_time = datetime.fromtimestamp(time.time() + 60, tz=timezone.utc)
+        start_time = end_time - timedelta(minutes=5)
 
-        feed_entries = await api.list_feed_intervals(child_uid, start_ts, end_ts)
+        feed_entries = await api.list_feed_intervals(child_uid, start_time, end_time)
         assert any(entry.mode == "solids" for entry in feed_entries)
