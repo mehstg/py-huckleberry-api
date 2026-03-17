@@ -72,7 +72,7 @@ class TestBottleFeeding:
         """Test logging formula bottle feeding."""
         # Log formula bottle
         start_time = await self._next_bottle_start_time(api, child_uid)
-        created_after = time.time()
+        created_after = start_time.timestamp()
         await api.log_bottle(child_uid, start_time=start_time, amount=120.0, bottle_type="Formula", units="ml")
         await asyncio.sleep(2)
 
@@ -109,7 +109,7 @@ class TestBottleFeeding:
         """Test logging breast milk bottle feeding."""
         # Log breast milk bottle
         start_time = await self._next_bottle_start_time(api, child_uid)
-        created_after = time.time()
+        created_after = start_time.timestamp()
         await api.log_bottle(child_uid, start_time=start_time, amount=90.0, bottle_type="Breast Milk", units="ml")
         await asyncio.sleep(2)
 

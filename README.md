@@ -31,9 +31,8 @@ pip install huckleberry-api
 
 ```python
 import asyncio
-from datetime import datetime
-import aiohttp
 from datetime import datetime, timedelta
+import aiohttp
 
 from huckleberry_api import HuckleberryAPI
 
@@ -111,7 +110,6 @@ Set up real-time listeners for instant updates:
 
 ```python
 import aiohttp
-from datetime import datetime, timedelta
 
 def on_sleep_update(data):
     timer = data.get("timer", {})

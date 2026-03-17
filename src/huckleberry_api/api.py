@@ -648,18 +648,19 @@ class HuckleberryAPI:
 
         current_time = time.time()
         duration_sec = int(end_timestamp - start_timestamp)
+        timezone_offset = await self._get_timezone_offset_minutes()
         sleep_interval = FirebaseSleepIntervalData(
             start=int(start_timestamp),
             duration=duration_sec,
-            offset=await self._get_timezone_offset_minutes(),
-            end_offset=await self._get_timezone_offset_minutes(),
+            offset=timezone_offset,
+            end_offset=timezone_offset,
             details=details,
             lastUpdated=current_time,
         )
         last_sleep_data = FirebaseLastSleepData(
             start=int(start_timestamp),
             duration=duration_sec,
-            offset=await self._get_timezone_offset_minutes(),
+            offset=timezone_offset,
         )
 
         client = await self._get_firestore_client()
@@ -1825,9 +1826,7 @@ class HuckleberryAPI:
 
         start_timestamp = start_time.timestamp()
         current_offset = await self._get_timezone_offset_minutes()
-        end_offset = None
-        if duration is not None:
-            end_offset = await self._get_timezone_offset_minutes()
+        end_offset = current_offset if duration is not None else None
 
         current_time = time.time()
         interval_id = f"{int(current_time * 1000)}-{uuid.uuid4().hex[:20]}"
@@ -1905,9 +1904,7 @@ class HuckleberryAPI:
 
         start_timestamp = start_time.timestamp()
         current_offset = await self._get_timezone_offset_minutes()
-        end_offset = None
-        if duration is not None:
-            end_offset = await self._get_timezone_offset_minutes()
+        end_offset = current_offset if duration is not None else None
         current_time = time.time()
         interval_id = f"{int(current_time * 1000)}-{uuid.uuid4().hex[:20]}"
 
