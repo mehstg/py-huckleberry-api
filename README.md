@@ -142,6 +142,7 @@ async def main() -> None:
 ### Children
 - `await get_user()` - Get full `users/{uid}` document
 - `await get_child(child_uid)` - Get a single child profile by id
+- `await get_sweetspot(child_uid)` - Get the child SweetSpot prediction payload when available
 
 ### Sleep Tracking
 - `await start_sleep(child_uid)` - Start sleep session

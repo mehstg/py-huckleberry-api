@@ -133,6 +133,20 @@ class TestChildrenRetrieval:
         assert child is not None
         assert child.model_dump(exclude_none=True)
 
+    async def test_get_sweetspot(self, api: HuckleberryAPI) -> None:
+        """Test retrieving child SweetSpot data by id when present."""
+        user_doc = await api.get_user()
+        assert user_doc is not None
+
+        child_uids = [child_ref.cid for child_ref in user_doc.childList]
+        assert child_uids
+
+        sweetspot = await api.get_sweetspot(child_uids[0])
+        if sweetspot is None:
+            return
+
+        assert sweetspot.model_dump(exclude_none=True)
+
 
 class TestErrorHandling:
     """Test error handling."""

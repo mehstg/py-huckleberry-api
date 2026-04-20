@@ -149,13 +149,60 @@ class FirebaseUserDocument(StrictModel):
 # ---------------------------------------------------------------------------
 
 
+SweetspotSource = Literal["ai_ml", "ai_ml_rl", "default"]
+
+
+class FirebaseChildSweetspotPrediction(StrictModel):
+    """SweetSpot prediction value nested under childs/{child_id}.sweetspot."""
+
+    best_by_date: Number
+    value: Number
+    source: SweetspotSource | None = None
+
+
+class FirebaseChildDisplayedSweetspotPrediction(StrictModel):
+    """Displayed SweetSpot prediction nested under childs/{child_id}.sweetspot.displayedSweetSpot."""
+
+    displayed_time: Number
+    source: SweetspotSource
+    timestamp: Number
+    value: Number
+
+
+class FirebaseChildSweetspotStrings(StrictModel):
+    """Localized/app-generated SweetSpot display strings."""
+
+    text1: str | None = None
+    text2: str | None = None
+    text3: str | None = None
+
+
 class FirebaseChildSweetspot(StrictModel):
     """Known payload for childs/{child_id}.sweetspot."""
 
+    ai: dict[str, dict[str, FirebaseChildSweetspotPrediction]] | None = None
+    displayedSweetSpot: dict[str, dict[str, FirebaseChildDisplayedSweetspotPrediction]] | None = None
     selectedNapDay: Number | None = None
+    shadowSweetSpotData: dict[str, dict[str, FirebaseChildSweetspotPrediction]] | None = None
     sweetSpotTimes: dict[str, Number] | None = None
-    # sweetspotStrings: FirebaseChildSweetspotStrings | None = None
+    sweetspotStrings: FirebaseChildSweetspotStrings | None = None
     uuid: str | None = None
+
+
+class FirebaseChildSweetspotAdjustmentWindow(StrictModel):
+    """Manual SweetSpot adjustment entry under childs/{child_id}.sweetspotAdjust.windows."""
+
+    absolute: Number
+    manual: bool
+    relative: Number
+
+
+class FirebaseChildSweetspotAdjustment(StrictModel):
+    """Known payload for childs/{child_id}.sweetspotAdjust."""
+
+    custom: bool
+    date_updated: Number
+    windows: dict[str, dict[str, FirebaseChildSweetspotAdjustmentWindow]]
 
 
 class FirebaseChildDocument(StrictModel):
@@ -172,6 +219,7 @@ class FirebaseChildDocument(StrictModel):
     morningCutoff: str | Number | None = None
     naps: str | None = None
     sweetspot: FirebaseChildSweetspot | None = None
+    sweetspotAdjust: FirebaseChildSweetspotAdjustment | None = None
     # analytics: Any | None = None
     pre: Number | None = None
     singleIntervalCount: Number | None = None

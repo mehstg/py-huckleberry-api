@@ -7,6 +7,8 @@ from huckleberry_api.firebase_types import (
     FirebaseActivityPrefs,
     FirebaseActivityTimerData,
     FirebaseActivityTimerEntryData,
+    FirebaseChildDocument,
+    FirebaseChildSweetspot,
     FirebaseDiaperDocumentData,
     FirebaseFeedDocumentData,
     FirebaseGrowthData,
@@ -19,6 +21,99 @@ from huckleberry_api.firebase_types import (
     FirebasePumpPrefs,
     FirebaseSleepDocumentData,
 )
+
+
+def test_child_sweetspot_model_accepts_known_payload() -> None:
+    """SweetSpot data is stored under childs/{child_uid}.sweetspot."""
+    model = FirebaseChildSweetspot.model_validate(
+        {
+            "ai": {
+                "5": {
+                    "W1": {
+                        "best_by_date": 1776716400.0,
+                        "source": "ai_ml_rl",
+                        "value": 1776712800.0,
+                    }
+                }
+            },
+            "displayedSweetSpot": {
+                "5": {
+                    "W1": {
+                        "displayed_time": 1776711000.0,
+                        "source": "ai_ml_rl",
+                        "timestamp": 1776711000.0,
+                        "value": 1776712800.0,
+                    }
+                }
+            },
+            "selectedNapDay": 3,
+            "shadowSweetSpotData": {
+                "2": {
+                    "W1": {
+                        "best_by_date": 1773179168.0,
+                        "value": 1773175568.0,
+                    }
+                }
+            },
+            "sweetSpotTimes": {
+                "1": 1773175568,
+                "2": 1773182768.5,
+            },
+            "sweetspotStrings": {
+                "text1": "Next nap",
+                "text2": None,
+                "text3": "SweetSpot",
+            },
+            "uuid": "abc123",
+        }
+    )
+
+    assert model.ai is not None
+    assert model.ai["5"]["W1"].source == "ai_ml_rl"
+    assert model.displayedSweetSpot is not None
+    assert model.displayedSweetSpot["5"]["W1"].source == "ai_ml_rl"
+    assert model.shadowSweetSpotData is not None
+    assert model.shadowSweetSpotData["2"]["W1"].source is None
+    assert model.selectedNapDay == 3
+    assert model.sweetSpotTimes == {"1": 1773175568, "2": 1773182768.5}
+    assert model.sweetspotStrings is not None
+    assert model.sweetspotStrings.text2 is None
+    assert model.uuid == "abc123"
+
+
+def test_child_document_accepts_sweetspot_payload() -> None:
+    """Child documents should expose SweetSpot payloads without loosening the root schema."""
+    model = FirebaseChildDocument.model_validate(
+        {
+            "childsName": "Test child",
+            "sweetspot": {
+                "selectedNapDay": 2,
+                "sweetSpotTimes": {
+                    "1": 1773175568,
+                },
+                "uuid": "def456",
+            },
+            "sweetspotAdjust": {
+                "custom": True,
+                "date_updated": 1773175568.0,
+                "windows": {
+                    "2": {
+                        "0": {
+                            "absolute": 1773179168.0,
+                            "manual": True,
+                            "relative": 1800.0,
+                        }
+                    }
+                },
+            },
+        }
+    )
+
+    assert model.sweetspot is not None
+    assert model.sweetspot.selectedNapDay == 2
+    assert model.sweetspot.sweetSpotTimes == {"1": 1773175568}
+    assert model.sweetspotAdjust is not None
+    assert model.sweetspotAdjust.windows["2"]["0"].manual is True
 
 
 def test_feed_document_accepts_empty_last_summary_maps() -> None:

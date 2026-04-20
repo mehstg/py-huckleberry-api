@@ -33,6 +33,7 @@ from .firebase_types import (
     FirebaseBottleFeedIntervalData,
     FirebaseBreastFeedIntervalData,
     FirebaseChildDocument,
+    FirebaseChildSweetspot,
     FirebaseCuratedFoodDocument,
     FirebaseCustomFoodTypeDocument,
     FirebaseDiaperData,
@@ -360,6 +361,14 @@ class HuckleberryAPI:
         except (GoogleAPICallError, ValidationError, RuntimeError, TypeError, ValueError) as err:
             _LOGGER.error("Failed to get child %s: %s", child_uid, err)
             raise
+
+    async def get_sweetspot(self, child_uid: str) -> FirebaseChildSweetspot | None:
+        """Get the SweetSpot prediction payload for a child, if available."""
+        child = await self.get_child(child_uid)
+        if child is None:
+            return None
+
+        return child.sweetspot
 
     async def get_user(self) -> FirebaseUserDocument | None:
         """Get full users/{uid} document as strict Firebase model."""
